@@ -1,0 +1,75 @@
+# ====================================================================
+#  STOCK TRACKER SETTINGS  -  copy this file to config.yaml and edit
+# ====================================================================
+
+settings:
+  timezone: Asia/Kolkata            # all dates/times in Indian time
+  check_every_minutes: 15           # how often to check (don't go below 5 - sites may block you)
+  delay_between_products_seconds: [5, 12]
+  use_browser: auto                 # auto | always | never  (auto = use real Chrome only if blocked)
+  notify_on_first_check: true       # send a message the first time a product is checked
+  alert_after_failures: 6           # warn you if a page can't be read this many times in a row
+  daily_summary_time: "09:00"       # daily summary + Excel/PDF; remove this line to turn off
+  web_port: 8787                    # dashboard port; if busy, the next free port is used automatically
+  web_host: 127.0.0.1               # 127.0.0.1 = only this PC | 0.0.0.0 = also your phone on same Wi-Fi
+
+# --------------------------------------------------------------------
+#  PRODUCTS  - paste the full product page link
+#  Optional per product:
+#     target_price: 25000                 -> extra alert when price drops to/below this
+#     in_stock_text: "Add to Cart"        -> custom text meaning "available" on that site
+#     out_of_stock_text: "Sold Out"       -> custom text meaning "not available"
+#     active: false                       -> pause tracking
+# --------------------------------------------------------------------
+products:
+  - name: Example - Amazon product
+    url: https://www.amazon.in/dp/B0CHX1W1XY
+    target_price: 60000
+  - name: Example - Flipkart product
+    url: https://www.flipkart.com/apple-iphone-15-black-128-gb/p/itm6ac6485515ae4
+
+# --------------------------------------------------------------------
+#  NOTIFICATIONS  - set enabled: true for the ones you want
+# --------------------------------------------------------------------
+notifications:
+
+  telegram:                         # FREE, easiest & most reliable
+    enabled: false
+    bot_token: "123456789:ABCdefYourBotToken"
+    chat_id: "123456789"
+
+  whatsapp:
+    enabled: false
+    provider: callmebot             # callmebot (free, personal) or twilio (paid, business)
+    phone: "+919876543210"          # your WhatsApp number with country code
+    apikey: "1234567"               # from CallMeBot
+    # --- only for twilio ---
+    account_sid: ""
+    auth_token: ""
+    from_number: "+14155238886"
+    to_number: "+919876543210"
+
+  google_chat:
+    enabled: false
+    webhook_url: "https://chat.googleapis.com/v1/spaces/XXXX/messages?key=...&token=..."
+
+  email:
+    enabled: false
+    smtp_server: smtp.gmail.com
+    smtp_port: 587
+    username: "yourname@gmail.com"
+    password: "your-16-letter-app-password"   # Gmail App Password, NOT your normal password
+    to: ["yourname@gmail.com"]
+    attach_reports: true            # attach the Excel + PDF to every alert email
+
+  ntfy:                             # FREE phone push notifications, no account needed
+    enabled: false
+    topic: "my-stock-alerts-change-this-to-something-unique"
+
+  discord:
+    enabled: false
+    webhook_url: ""
+
+  slack:
+    enabled: false
+    webhook_url: ""

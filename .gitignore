@@ -1,0 +1,5 @@
+# your private settings (bot tokens, passwords) - never upload
+config.yaml
+data/
+__pycache__/
+*.pyc
