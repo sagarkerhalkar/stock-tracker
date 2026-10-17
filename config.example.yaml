@@ -4,8 +4,9 @@
 
 settings:
   timezone: Asia/Kolkata            # all dates/times in Indian time
-  check_every_minutes: 15           # how often to check (don't go below 5 - sites may block you)
-  delay_between_products_seconds: [3, 6]   # wait between 2 products of the SAME site (different sites run in parallel)
+  check_every_minutes: 5            # in-stock products: how often to check if they went OUT of stock
+  fast_check_minutes: 2             # out-of-stock products: checked more often so you know the moment they're BACK
+  delay_between_products_seconds: [2, 4]   # wait between 2 products of the SAME site (different sites run in parallel)
   use_browser: auto                 # auto | always | never  (auto = use real Chrome only if blocked)
   notify_on_first_check: true       # send a message the first time a product is checked
   alert_after_failures: 6           # warn you if a page can't be read this many times in a row
@@ -29,50 +30,32 @@ products:
     url: https://www.flipkart.com/apple-iphone-15-black-128-gb/p/itm6ac6485515ae4
 
 # --------------------------------------------------------------------
-#  NOTIFICATIONS  - set enabled: true for the ones you want
+#  NOTIFICATIONS - easiest: set these up on the dashboard's "Alerts" page.
+#  (Everything below is filled in for you when you click Save there.)
 # --------------------------------------------------------------------
 notifications:
-
-  desktop:                          # pop-up on this PC when stock changes
+  desktop:
     enabled: true
-
-  telegram:                         # FREE, easiest & most reliable
+  telegram:
     enabled: false
-    bot_token: "123456789:ABCdefYourBotToken"
-    chat_id: "123456789"
-
+    bot_token: ""
+    chat_id: ""
   whatsapp:
     enabled: false
     provider: callmebot             # callmebot (free, personal) or twilio (paid, business)
-    phone: "+919876543210"          # your WhatsApp number with country code
-    apikey: "1234567"               # from CallMeBot
-    # --- only for twilio ---
-    account_sid: ""
-    auth_token: ""
-    from_number: "+14155238886"
-    to_number: "+919876543210"
-
+    phone: ""                       # +919876543210
+    apikey: ""
   google_chat:
     enabled: false
-    webhook_url: "https://chat.googleapis.com/v1/spaces/XXXX/messages?key=...&token=..."
-
+    webhook_url: ""
   email:
     enabled: false
     smtp_server: smtp.gmail.com
     smtp_port: 587
-    username: "yourname@gmail.com"
-    password: "your-16-letter-app-password"   # Gmail App Password, NOT your normal password
-    to: ["yourname@gmail.com"]
-    attach_reports: true            # attach the Excel + PDF to every alert email
-
-  ntfy:                             # FREE phone push notifications, no account needed
+    username: ""
+    password: ""                    # Gmail App Password (16 letters), NOT your normal password
+    to: []
+    attach_reports: true
+  ntfy:
     enabled: false
-    topic: "my-stock-alerts-change-this-to-something-unique"
-
-  discord:
-    enabled: false
-    webhook_url: ""
-
-  slack:
-    enabled: false
-    webhook_url: ""
+    topic: ""

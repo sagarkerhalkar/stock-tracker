@@ -330,86 +330,214 @@ def check_product(product, settings):
     if product.get("out_of_stock_text") and product["out_of_stock_text"].lower() in page:
         status, detail = OUT, f"found '{product['out_of_stock_text']}'"
     return {"status": status or UNKNOWN, "price": find_price(soup, html), "detail": detail or err or "could not decide",
-            "site": site, "title": title[:150]}
+            "site": site, "title": title[:150], "image": find_image(soup)}
+
+
+def find_image(soup):
+    el = soup.select_one("#landingImage, #imgBlkFront")
+    if el:
+        for k in ("data-old-hires", "src"):
+            v = el.get(k) or ""
+            if v.startswith("http"):
+                return v
+    for sel in ["meta[property='og:image']", "meta[name='og_image']", "meta[name='twitter:image']", "[itemprop=image]"]:
+        el = soup.select_one(sel)
+        v = el and (el.get("content") or el.get("src") or el.get("href"))
+        if v and v.startswith("http"):
+            return v
+    m = re.search(r'"image"\s*:\s*\[?\s*"(https?://[^"]+)"', " ".join(
+        x.string or "" for x in soup.find_all("script", type="application/ld+json")))
+    return m.group(1) if m else ""
 
 
 # --------------------------------------------------------------------------- notifications
-def notify_all(cfg, subject, message, attach=None):
+REQUIRED = {"telegram": ["bot_token", "chat_id"], "whatsapp": ["phone", "apikey"], "google_chat": ["webhook_url"],
+            "email": ["username", "password"], "ntfy": ["topic"], "discord": ["webhook_url"], "slack": ["webhook_url"]}
+CHANNELS = ["desktop", "telegram", "whatsapp", "google_chat", "email", "ntfy", "discord", "slack"]
+
+
+def notify_all(cfg, subject, message, attach=None, alert=None, only=None):
+    """Send to every enabled channel (or just `only`). `alert` carries product details for rich messages."""
     n = cfg["notifications"]
-    sent = []
-    for name, fn in [("telegram", send_telegram), ("whatsapp", send_whatsapp), ("google_chat", send_google_chat),
-                     ("email", send_email), ("discord", send_discord), ("slack", send_slack), ("ntfy", send_ntfy),
-                     ("desktop", send_desktop)]:
+    sent, errors = [], {}
+    fns = {"telegram": send_telegram, "whatsapp": send_whatsapp, "google_chat": send_google_chat,
+           "email": send_email, "discord": send_discord, "slack": send_slack, "ntfy": send_ntfy,
+           "desktop": send_desktop}
+    for name in ([only] if only else CHANNELS):
         c = n.get(name) or ({"enabled": True} if name == "desktop" else {})
-        if not c.get("enabled"):
+        if not only and not c.get("enabled"):
+            continue
+        missing = [f for f in REQUIRED.get(name, []) if not str(c.get(f) or "").strip()]
+        if name == "whatsapp" and c.get("provider") == "twilio":
+            missing = [f for f in ("account_sid", "auth_token", "from_number", "to_number") if not c.get(f)]
+        if missing:
+            labels = {"username": "your Gmail address", "password": "app password", "apikey": "API key",
+                      "phone": "your WhatsApp number", "bot_token": "bot token", "chat_id": "chat ID",
+                      "webhook_url": "webhook URL", "topic": "topic name"}
+            errors[name] = "Please fill in " + " and ".join(labels.get(m, m.replace("_", " ")) for m in missing)
             continue
         try:
-            if name == "email":
-                fn(c, subject, message, attach)
-            else:
-                fn(c, subject, message)
+            fns[name](c, subject, message, alert or {}, attach)
             sent.append(name)
         except Exception as e:
-            print(f"   ! {name} failed: {e}")
-    return sent
+            errors[name] = friendly_error(name, e)
+            print(f"   ! {name} failed: {errors[name]}")
+    return sent, errors
 
 
-def send_desktop(c, subject, msg):
+def friendly_error(name, e):
+    msg = str(e)
+    if isinstance(e, KeyError):
+        return f"Missing setting: {e.args[0]}"
+    if "401" in msg or "Unauthorized" in msg:
+        return "Wrong token / key - copy it again"
+    if "400" in msg and name == "telegram":
+        return "Chat ID is wrong, or you haven't pressed Start in your bot yet"
+    if "403" in msg and name == "telegram":
+        return "Open your bot in Telegram and press Start first"
+    if "Username and Password not accepted" in msg or "535" in msg:
+        return "Gmail rejected the login - use a 16-letter App Password, not your normal password"
+    if "404" in msg:
+        return "Link / webhook URL not found - copy it again"
+    return msg[:200]
+
+
+def send_desktop(c, subject, msg, alert, attach=None):
     """Pop-up notification on this computer (Windows/Mac/Linux). Needs: pip install plyer"""
     try:
         from plyer import notification
     except ImportError:
         return
-    notification.notify(title=subject[:63], message=msg[:250], app_name="Stock Tracker", timeout=15)
+    body = f"{alert['product']}\n{alert.get('price', '')}  {alert.get('site', '')}" if alert.get("product") else msg
+    notification.notify(title=subject[:63], message=body[:250], app_name="Restock Watch", timeout=20)
 
 
-def send_telegram(c, subject, msg):
-    r = requests.post(f"https://api.telegram.org/bot{c['bot_token']}/sendMessage",
-                      json={"chat_id": c["chat_id"], "text": f"{subject}\n\n{msg}", "disable_web_page_preview": False},
-                      timeout=20)
+def _html(s):
+    return str(s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def send_telegram(c, subject, msg, alert, attach=None):
+    api = f"https://api.telegram.org/bot{str(c['bot_token']).strip()}"
+    chat = str(c["chat_id"]).strip()
+    if alert.get("product"):
+        lines = [f"<b>{_html(subject)}</b>", "", f"<b>{_html(alert['product'])}</b>"]
+        if alert.get("price"):
+            lines.append(f"💰 {_html(alert['price'])}")
+        lines.append(f"🛒 {_html(alert.get('site', ''))}")
+        lines.append(f"🕒 {_html(alert.get('when', ''))}")
+        if alert.get("previous"):
+            lines.append(f"<i>{_html(alert['previous'])}</i>")
+        text = "\n".join(lines)
+        markup = {"inline_keyboard": [[{"text": f"Open on {alert.get('site', 'site')}", "url": alert["url"]}]]} \
+            if alert.get("url") else None
+        if alert.get("image"):
+            r = requests.post(f"{api}/sendPhoto", json={"chat_id": chat, "photo": alert["image"], "caption": text,
+                                                         "parse_mode": "HTML", "reply_markup": markup}, timeout=25)
+            if r.ok:
+                return
+        r = requests.post(f"{api}/sendMessage", json={"chat_id": chat, "text": text, "parse_mode": "HTML",
+                                                       "reply_markup": markup, "disable_web_page_preview": True},
+                          timeout=20)
+    else:
+        r = requests.post(f"{api}/sendMessage", json={"chat_id": chat, "text": f"{subject}\n\n{msg}"}, timeout=20)
+    if not r.ok:
+        raise RuntimeError(f"{r.status_code} {r.text[:150]}")
+
+
+def telegram_find_chat(token):
+    """After the user sends any message to their bot, this finds their chat ID automatically."""
+    r = requests.get(f"https://api.telegram.org/bot{token.strip()}/getUpdates", timeout=20)
+    if r.status_code == 401 or r.status_code == 404:
+        raise RuntimeError("That bot token is wrong - copy it again from @BotFather")
     r.raise_for_status()
+    for upd in reversed(r.json().get("result", [])):
+        m = upd.get("message") or upd.get("channel_post") or upd.get("my_chat_member") or {}
+        chat = m.get("chat")
+        if chat:
+            return {"chat_id": str(chat["id"]),
+                    "name": chat.get("first_name") or chat.get("title") or chat.get("username") or ""}
+    raise RuntimeError("No message found - open your bot in Telegram, press Start, send 'hi', then try again")
 
 
-def send_whatsapp(c, subject, msg):
-    text = f"*{subject}*\n\n{msg}"
+def plain_text(subject, msg, alert, bold="*"):
+    if not alert.get("product"):
+        return f"{bold}{subject}{bold}\n\n{msg}"
+    lines = [f"{bold}{subject}{bold}", "", f"{bold}{alert['product']}{bold}"]
+    if alert.get("price"):
+        lines.append(f"💰 {alert['price']}")
+    lines += [f"🛒 {alert.get('site', '')}", f"🕒 {alert.get('when', '')}"]
+    if alert.get("previous"):
+        lines.append(f"_{alert['previous']}_" if bold == "*" else alert["previous"])
+    if alert.get("url"):
+        lines += ["", alert["url"]]
+    return "\n".join(lines)
+
+
+def send_whatsapp(c, subject, msg, alert, attach=None):
+    text = plain_text(subject, msg, alert)
     provider = c.get("provider", "callmebot")
     if provider == "callmebot":
-        r = requests.get(f"https://api.callmebot.com/whatsapp.php?phone={quote(str(c['phone']))}"
-                         f"&text={quote(text)}&apikey={quote(str(c['apikey']))}", timeout=30)
-        r.raise_for_status()
+        phone = re.sub(r"[^\d+]", "", str(c["phone"]))
+        r = requests.get("https://api.callmebot.com/whatsapp.php",
+                         params={"phone": phone, "text": text, "apikey": str(c["apikey"]).strip()}, timeout=30)
+        if not r.ok or "APIKey is invalid" in r.text or "ERROR" in r.text.upper()[:300]:
+            raise RuntimeError(f"CallMeBot said: {re.sub('<[^>]+>', ' ', r.text)[:150].strip()}")
     elif provider == "twilio":
         r = requests.post(f"https://api.twilio.com/2010-04-01/Accounts/{c['account_sid']}/Messages.json",
-                          data={"From": f"whatsapp:{c['from_number']}", "To": f"whatsapp:{c['to_number']}", "Body": text},
-                          auth=(c["account_sid"], c["auth_token"]), timeout=30)
+                          data={"From": f"whatsapp:{c['from_number']}", "To": f"whatsapp:{c['to_number']}",
+                                "Body": text}, auth=(c["account_sid"], c["auth_token"]), timeout=30)
         r.raise_for_status()
     else:
         raise ValueError(f"unknown whatsapp provider {provider}")
 
 
-def send_google_chat(c, subject, msg):
-    requests.post(c["webhook_url"], json={"text": f"*{subject}*\n{msg}"}, timeout=20).raise_for_status()
+def send_google_chat(c, subject, msg, alert, attach=None):
+    url = str(c["webhook_url"]).strip()
+    if alert.get("product"):
+        widgets = [{"decoratedText": {"topLabel": "Product", "text": f"<b>{_html(alert['product'])}</b>", "wrapText": True}}]
+        if alert.get("price"):
+            widgets.append({"decoratedText": {"topLabel": "Price", "text": _html(alert["price"])}})
+        widgets.append({"decoratedText": {"topLabel": "When", "text": _html(alert.get("when", ""))}})
+        if alert.get("previous"):
+            widgets.append({"textParagraph": {"text": f"<i>{_html(alert['previous'])}</i>"}})
+        if alert.get("url"):
+            widgets.append({"buttonList": {"buttons": [{"text": f"Open on {alert.get('site', 'site')}",
+                                                        "onClick": {"openLink": {"url": alert["url"]}}}]}})
+        header = {"title": subject, "subtitle": alert.get("site", "")}
+        if alert.get("image"):
+            header.update({"imageUrl": alert["image"], "imageType": "SQUARE"})
+        body = {"text": f"{subject}: {alert['product']}",
+                "cardsV2": [{"cardId": "stock", "card": {"header": header, "sections": [{"widgets": widgets}]}}]}
+        r = requests.post(url, json=body, timeout=20)
+        if r.ok:
+            return
+    r = requests.post(url, json={"text": plain_text(subject, msg, alert)}, timeout=20)
+    r.raise_for_status()
 
 
-def send_discord(c, subject, msg):
-    requests.post(c["webhook_url"], json={"content": f"**{subject}**\n{msg}"}, timeout=20).raise_for_status()
+def send_discord(c, subject, msg, alert, attach=None):
+    requests.post(c["webhook_url"], json={"content": plain_text(subject, msg, alert, "**")}, timeout=20).raise_for_status()
 
 
-def send_slack(c, subject, msg):
-    requests.post(c["webhook_url"], json={"text": f"*{subject}*\n{msg}"}, timeout=20).raise_for_status()
+def send_slack(c, subject, msg, alert, attach=None):
+    requests.post(c["webhook_url"], json={"text": plain_text(subject, msg, alert)}, timeout=20).raise_for_status()
 
 
-def send_ntfy(c, subject, msg):
+def send_ntfy(c, subject, msg, alert, attach=None):
     server = c.get("server", "https://ntfy.sh").rstrip("/")
-    requests.post(f"{server}/{c['topic']}", data=msg.encode("utf-8"),
-                  headers={"Title": subject.encode("ascii", "ignore").decode() or "Stock alert", "Priority": "high"},
-                  timeout=20).raise_for_status()
+    headers = {"Title": subject.encode("ascii", "ignore").decode().strip() or "Stock alert", "Priority": "high"}
+    if alert.get("url"):
+        headers["Click"] = alert["url"]
+    requests.post(f"{server}/{c['topic']}", data=plain_text(subject, msg, alert, "").encode("utf-8"),
+                  headers=headers, timeout=20).raise_for_status()
 
 
-def send_email(c, subject, msg, attach=None):
+def send_email(c, subject, msg, alert, attach=None):
     m = MIMEMultipart()
-    m["From"], m["To"], m["Subject"] = c["username"], ", ".join(c["to"]) if isinstance(c["to"], list) else c["to"], subject
-    m.attach(MIMEText(msg, "plain", "utf-8"))
-    for path in attach or []:
+    to = c.get("to") or c["username"]
+    m["From"], m["To"], m["Subject"] = c["username"], ", ".join(to) if isinstance(to, list) else to, subject
+    m.attach(MIMEText(plain_text(subject, msg, alert, ""), "plain", "utf-8"))
+    for path in (attach if c.get("attach_reports", True) else None) or []:
         if path and os.path.exists(path):
             with open(path, "rb") as f:
                 part = MIMEApplication(f.read(), Name=os.path.basename(path))
@@ -417,7 +545,7 @@ def send_email(c, subject, msg, attach=None):
             m.attach(part)
     with smtplib.SMTP(c.get("smtp_server", "smtp.gmail.com"), int(c.get("smtp_port", 587)), timeout=30) as s:
         s.starttls()
-        s.login(c["username"], c["password"])
+        s.login(c["username"], str(c["password"]).replace(" ", ""))
         s.send_message(m)
 
 
@@ -447,7 +575,11 @@ def fmt_dur(sec):
     d, r = divmod(sec, 86400)
     h, r = divmod(r, 3600)
     m = r // 60
-    return (f"{d}d " if d else "") + f"{h}h {m}m"
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m}m"
+    return f"{m} min" if m else "less than a minute"
 
 
 def build_reports(cfg):
@@ -566,7 +698,23 @@ from concurrent.futures import ThreadPoolExecutor
 
 CHECK_LOCK = threading.Lock()
 WAKE = threading.Event()
+FORCE = threading.Event()
 PROGRESS = {"running": False, "done": 0, "total": 0, "current": "", "next_check": None, "last_run": None}
+
+EVENT_TITLES = {
+    "FIRST CHECK - IN STOCK": "✅ AVAILABLE NOW",
+    "FIRST CHECK - OUT OF STOCK": "⛔ NOT AVAILABLE RIGHT NOW",
+    "WENT OUT OF STOCK": "🔴 WENT OUT OF STOCK",
+    "BACK IN STOCK": "🟢 BACK IN STOCK - available again!",
+}
+
+
+def interval_for(cfg, status):
+    """Out-of-stock products are watched more closely so you hear the moment they come back."""
+    s = cfg["settings"]
+    if status == IN:
+        return float(s.get("check_every_minutes", 5)) * 60
+    return float(s.get("fast_check_minutes", 2)) * 60
 
 
 def _check_site_group(group, s):
@@ -581,26 +729,26 @@ def _check_site_group(group, s):
         out.append((p, res))
         PROGRESS["done"] += 1
         if i < len(group) - 1:
-            time.sleep(random.uniform(*s.get("delay_between_products_seconds", [3, 6])))
+            time.sleep(random.uniform(*s.get("delay_between_products_seconds", [2, 4])))
     return out
 
 
-def check_all(cfg, send=True):
+def check_all(cfg, send=True, products=None):
     if not CHECK_LOCK.acquire(blocking=False):
         print("A check is already running - skipped.")
         return False
     try:
-        return _check_all(cfg, send)
+        return _check_all(cfg, send, products)
     finally:
         PROGRESS.update(running=False, current="", last_run=now(cfg).strftime("%Y-%m-%d %H:%M:%S"))
         CHECK_LOCK.release()
 
 
-def _check_all(cfg, send):
+def _check_all(cfg, send, products):
     s = cfg["settings"]
-    products = [p for p in cfg["products"] if p.get("active", True)]
+    if products is None:
+        products = [p for p in cfg["products"] if p.get("active", True)]
     if not products:
-        print("No products yet. Add one:  python stock_tracker.py add <url> --name \"Product\"")
         return True
     PROGRESS.update(running=True, done=0, total=len(products), current="")
     groups = {}
@@ -610,7 +758,7 @@ def _check_all(cfg, send):
         results = [r for chunk in ex.map(lambda g: _check_site_group(g, s), groups.values()) for r in chunk]
 
     state = load_state()
-    changes = []
+    alerts = []
     for p, res in results:
         t = now(cfg)
         date, clock = t.strftime("%Y-%m-%d"), t.strftime("%H:%M:%S")
@@ -622,59 +770,55 @@ def _check_all(cfg, send):
                                               "status": res["status"], "price": res["price"], "detail": res["detail"],
                                               "url": p["url"]})
         entry = dict(prev)
-        entry.update({"last_checked": f"{date} {clock}", "title": res.get("title") or prev.get("title", ""),
-                      "detail": res["detail"]})
+        entry.update({"last_checked": f"{date} {clock}", "last_ts": time.time(), "detail": res["detail"],
+                      "title": res.get("title") or prev.get("title", "")})
+        if res.get("image"):
+            entry["image"] = res["image"]
         if res["price"]:
             entry["price"] = res["price"]
+        when = t.strftime("%d %b %Y, %I:%M:%S %p")
+        base = {"product": name, "site": res["site"], "price": res["price"] or prev.get("price", ""),
+                "url": p["url"], "image": entry.get("image", ""), "when": when}
         if res["status"] == UNKNOWN:
             entry["fails"] = prev.get("fails", 0) + 1
             if entry["fails"] == int(s.get("alert_after_failures", 6)) and send:
-                notify_all(cfg, "⚠️ Stock tracker can't read a page",
-                           f"{name}\nCould not read the page {entry['fails']} times in a row ({res['detail']}).\n{p['url']}")
+                alerts.append(("⚠️ Can't read this product page",
+                               dict(base, previous=f"The site blocked {entry['fails']} checks in a row. It keeps trying.")))
         else:
             entry["fails"] = 0
             if res["status"] != old:
-                if old is None:
-                    event = f"FIRST CHECK - {res['status']}"
-                elif res["status"] == IN:
-                    event = "BACK IN STOCK"
-                else:
-                    event = "WENT OUT OF STOCK"
+                event = (f"FIRST CHECK - {res['status']}" if old is None else
+                         "BACK IN STOCK" if res["status"] == IN else "WENT OUT OF STOCK")
                 entry.update({"status": res["status"], "since": f"{date} {clock}"})
                 append_csv(EVENTS_CSV, EVENT_FIELDS, {"date": date, "time": clock, "product": name, "site": res["site"],
                                                       "event": event, "old_status": old or "-", "new_status": res["status"],
                                                       "price": res["price"], "url": p["url"], "note": res["detail"]})
-                changes.append((name, event, res, p, date, clock, prev))
+                if not (old is None and not s.get("notify_on_first_check", True)):
+                    previous = ""
+                    if old and prev.get("since"):
+                        dur = fmt_dur(time.time() - datetime.strptime(prev["since"], "%Y-%m-%d %H:%M:%S")
+                                      .replace(tzinfo=tz(cfg)).timestamp())
+                        previous = f"Was {'out of stock' if old == OUT else 'available'} for {dur}"
+                    alerts.append((EVENT_TITLES[event], dict(base, previous=previous)))
             target = p.get("target_price")
             pnum = to_num(res["price"])
             if target and pnum and pnum <= float(target) and res["status"] == IN and not prev.get("target_hit"):
                 entry["target_hit"] = True
-                changes.append((name, f"PRICE DROP to {res['price']} (target ₹{target})", res, p, date, clock, prev))
+                alerts.append((f"💰 PRICE DROP - now {res['price']}", dict(base, previous=f"Your alert price: ₹{target:,.0f}")))
             elif target and pnum and pnum > float(target):
                 entry["target_hit"] = False
         state[p["url"]] = entry
     save_state(state)
 
-    xlsx, pdf = build_reports(cfg)
-    for name, event, res, p, date, clock, prev in changes:
-        first = event.startswith("FIRST")
-        if first and not s.get("notify_on_first_check", True):
-            continue
-        icon = "🟢" if IN in event or "BACK" in event else "🔴" if "OUT" in event else "💰" if "PRICE" in event else "ℹ️"
-        when = datetime.strptime(f"{date} {clock}", "%Y-%m-%d %H:%M:%S").strftime("%d %b %Y, %I:%M:%S %p")
-        lines = [name, f"Site: {res['site']}", f"Status: {res['status']}", f"Time: {when}"]
-        if res["price"]:
-            lines.append(f"Price: {res['price']}")
-        if prev.get("since") and not first and "PRICE" not in event:
-            lines.append(f"Previous status: {prev.get('status')} since {prev['since']}")
-        lines.append(p["url"])
-        if send:
-            title = {"FIRST CHECK - IN STOCK": "✅ AVAILABLE NOW", "FIRST CHECK - OUT OF STOCK": "⛔ NOT AVAILABLE (out of stock)",
-                     "WENT OUT OF STOCK": "🔴 WENT OUT OF STOCK", "BACK IN STOCK": "🟢 BACK IN STOCK - available again!"}.get(
-                event, f"{icon} {event}")
-            sent = notify_all(cfg, title, "\n".join(lines),
-                              attach=[xlsx, pdf] if cfg["notifications"].get("email", {}).get("attach_reports") else None)
-            print(f"   -> notified: {', '.join(sent) or 'no channel enabled'}")
+    # alerts go out FIRST (so you hear immediately), reports are rebuilt after
+    if send:
+        for title, alert in alerts:
+            sent, errs = notify_all(cfg, title, "", alert=alert)
+            print(f"   -> {title}: sent to {', '.join(sent) or 'no channel'}")
+    try:
+        build_reports(cfg)
+    except Exception as e:
+        print("Report error:", e)
     return True
 
 
@@ -692,34 +836,51 @@ def daily_summary(cfg):
     for p in cfg["products"]:
         s = state.get(p["url"], {})
         lines.append(f"{'🟢' if s.get('status') == IN else '🔴' if s.get('status') == OUT else '⚪'} "
-                     f"{p.get('name') or s.get('title', p['url'])[:50]} - {s.get('status', 'not checked')} "
-                     f"{s.get('price', '')} (since {s.get('since', '-')})")
+                     f"{(p.get('name') or s.get('title') or p['url'])[:50]} - {s.get('status', 'not checked')} "
+                     f"{s.get('price', '')}")
     xlsx, pdf = build_reports(cfg)
-    notify_all(cfg, "📊 Daily stock summary", "\n".join(lines) or "No products", attach=[xlsx, pdf])
+    return notify_all(cfg, "📊 Daily stock summary", "\n".join(lines) or "No products", attach=[xlsx, pdf])
 
 
-def run_forever(cfg_initial):
+def due_products(cfg, force=False):
+    state, t = load_state(), time.time()
+    due, next_at = [], None
+    for p in cfg["products"]:
+        if not p.get("active", True):
+            continue
+        st_ = state.get(p["url"], {})
+        at = st_.get("last_ts", 0) + interval_for(cfg, st_.get("status"))
+        if force or at <= t:
+            due.append(p)
+        else:
+            next_at = at if next_at is None else min(next_at, at)
+    return due, next_at
+
+
+def run_forever(cfg_initial=None):
     last_summary_day = None
     while True:
-        cfg = load_config()  # reload so new products/settings are picked up without restart
+        cfg = load_config()  # re-read every round so changes from the dashboard apply at once
         try:
-            check_all(cfg)
+            due, _ = due_products(cfg, force=FORCE.is_set())
+            FORCE.clear()
+            if due:
+                check_all(cfg, products=due)
         except Exception as e:
             print("Error during check:", e)
         s = cfg["settings"]
         hhmm = s.get("daily_summary_time")
         t = now(cfg)
-        if hhmm and t.strftime("%H:%M") >= hhmm and last_summary_day != t.date():
+        if hhmm and t.strftime("%H:%M") >= str(hhmm) and last_summary_day != t.date():
             last_summary_day = t.date()
             try:
                 daily_summary(cfg)
             except Exception as e:
                 print("Summary error:", e)
-        mins = float(s.get("check_every_minutes", 15))
-        wait = mins * 60 * random.uniform(0.85, 1.15)
-        PROGRESS["next_check"] = time.time() + wait
-        print(f"Next check in {wait / 60:.1f} min  (Ctrl+C to stop)\n")
-        WAKE.wait(wait)   # the dashboard's "Check now" button wakes this up early
+        _, next_at = due_products(cfg)
+        PROGRESS["next_check"] = next_at
+        wait = max(1, min(15, (next_at - time.time()) if next_at else 15))
+        WAKE.wait(wait)   # "Check now" / adding a product wakes this up early
         WAKE.clear()
 
 
@@ -757,30 +918,127 @@ def show_ports(start, end):
         print("  lsof -iTCP -sTCP:LISTEN -P -n    or    ss -ltnp")
 
 
+_HIST = {"mtime": None, "data": {}}
+SECRET_KEYS = ("bot_token", "apikey", "password", "auth_token", "webhook_url")
+CHANNEL_FIELDS = {
+    "desktop": [],
+    "telegram": ["bot_token", "chat_id"],
+    "whatsapp": ["provider", "phone", "apikey", "account_sid", "auth_token", "from_number", "to_number"],
+    "google_chat": ["webhook_url"],
+    "email": ["smtp_server", "smtp_port", "username", "password", "to"],
+    "ntfy": ["topic"],
+    "discord": ["webhook_url"],
+    "slack": ["webhook_url"],
+}
+
+
+def price_history():
+    """Last 40 prices per product, read from checks.csv (cached until the file changes)."""
+    try:
+        mt = os.path.getmtime(CHECKS_CSV)
+    except OSError:
+        return {}
+    if _HIST["mtime"] != mt:
+        h = {}
+        for row in read_csv(CHECKS_CSV)[-20000:]:
+            v = to_num(row.get("price"))
+            if v:
+                h.setdefault(row["url"], []).append(v)
+        _HIST.update(mtime=mt, data={k: v[-40:] for k, v in h.items()})
+    return _HIST["data"]
+
+
 def api_state():
-    cfg, state = load_config(), load_state()
+    cfg, state, hist = load_config(), load_state(), price_history()
     products = []
     for p in cfg["products"]:
         s = state.get(p["url"], {})
+        due_in = None
+        if s.get("last_ts"):
+            due_in = max(0, int(s["last_ts"] + interval_for(cfg, s.get("status")) - time.time()))
         products.append({"name": p.get("name") or s.get("title") or "", "url": p["url"], "site": site_name(p["url"]),
                          "status": s.get("status", "NOT CHECKED"), "since": s.get("since", ""),
                          "price": s.get("price", ""), "last_checked": s.get("last_checked", ""),
-                         "target": p.get("target_price"), "detail": s.get("detail", ""),
-                         "fails": s.get("fails", 0), "active": p.get("active", True)})
+                         "target": p.get("target_price"), "detail": s.get("detail", ""), "image": s.get("image", ""),
+                         "fails": s.get("fails", 0), "active": p.get("active", True), "history": hist.get(p["url"], []),
+                         "due_in": due_in})
     n = cfg["notifications"]
-    channels = [k.replace("_", " ").title() for k, v in n.items() if isinstance(v, dict) and v.get("enabled")]
-    if "desktop" not in n:
-        channels.insert(0, "Desktop")
+    channels = [k for k in CHANNELS if (n.get(k) or ({"enabled": True} if k == "desktop" else {})).get("enabled")]
     nxt = PROGRESS.get("next_check")
-    return {"products": products, "events": list(reversed(read_csv(EVENTS_CSV)[-60:])),
+    events = list(reversed(read_csv(EVENTS_CSV)[-80:]))
+    today = now(cfg).strftime("%Y-%m-%d")
+    return {"products": products, "events": events,
+            "changes_today": sum(1 for e in events if e["date"] == today and not e["event"].startswith("FIRST")),
             "progress": {k: PROGRESS[k] for k in ("running", "done", "total", "current", "last_run")},
             "next_check_in": max(0, int(nxt - time.time())) if nxt else None,
-            "every_minutes": cfg["settings"].get("check_every_minutes", 15),
+            "every_minutes": cfg["settings"].get("check_every_minutes", 5),
+            "fast_minutes": cfg["settings"].get("fast_check_minutes", 2),
             "now": now(cfg).strftime("%Y-%m-%d %H:%M:%S"), "channels": channels}
 
 
+def api_settings_get():
+    cfg = load_config()
+    out = {}
+    for ch, fields in CHANNEL_FIELDS.items():
+        c = cfg["notifications"].get(ch) or {}
+        item = {"enabled": bool(c.get("enabled", ch == "desktop"))}
+        for f in fields:
+            v = c.get(f, "")
+            if f in SECRET_KEYS:
+                v = str(v or "")
+                item[f] = ""
+                item[f + "_saved"] = ("•••• " + v[-4:]) if v and "Your" not in v and "XXXX" not in v and len(v) > 6 else ""
+            else:
+                item[f] = ", ".join(v) if isinstance(v, list) else ("" if v is None else str(v))
+        out[ch] = item
+    s = cfg["settings"]
+    return {"channels": out, "check_every_minutes": s.get("check_every_minutes", 5),
+            "fast_check_minutes": s.get("fast_check_minutes", 2), "daily_summary_time": s.get("daily_summary_time", "")}
+
+
+def api_settings_save(body):
+    cfg = load_config()
+    if "channel" in body:
+        ch = body["channel"]
+        if ch not in CHANNEL_FIELDS:
+            raise ValueError("unknown channel")
+        c = dict(cfg["notifications"].get(ch) or {})
+        c["enabled"] = bool(body.get("enabled"))
+        for f in CHANNEL_FIELDS[ch]:
+            if f not in body:
+                continue
+            v = str(body[f]).strip()
+            if f in SECRET_KEYS and not v:
+                continue          # empty = keep the saved secret
+            if f == "to":
+                c[f] = [x.strip() for x in v.split(",") if x.strip()]
+            elif f == "smtp_port":
+                c[f] = int(v or 587)
+            else:
+                c[f] = v
+        if ch == "whatsapp":
+            c.setdefault("provider", "callmebot")
+        if ch == "email":
+            c.setdefault("smtp_server", "smtp.gmail.com")
+            c.setdefault("smtp_port", 587)
+            c.setdefault("attach_reports", True)
+            if not c.get("to") and c.get("username"):
+                c["to"] = [c["username"]]
+        cfg["notifications"][ch] = c
+    for k in ("check_every_minutes", "fast_check_minutes"):
+        if k in body:
+            cfg["settings"][k] = max(1.0, float(body[k]))
+    if "daily_summary_time" in body:
+        cfg["settings"]["daily_summary_time"] = body["daily_summary_time"] or None
+    save_config(cfg)
+    WAKE.set()
+
+
+SAMPLE_ALERT = {"product": "Test product - Restock Watch is connected", "site": "Amazon", "price": "₹1,999",
+                "url": "https://www.amazon.in/", "image": "", "previous": "This is a test. Real alerts look like this."}
+
+
 def run_web(port, host):
-    import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     ui_file = os.path.join(BASE, "dashboard.html")
@@ -807,12 +1065,14 @@ def run_web(port, host):
                      "/pdf": (PDF_FILE, "application/pdf"), "/csv": (EVENTS_CSV, "text/csv; charset=utf-8")}
             if path == "/api/state":
                 return self.send(api_state())
+            if path == "/api/settings":
+                return self.send(api_settings_get())
             if path in files:
                 fpath, ctype = files[path]
                 if path != "/csv":
                     build_reports(load_config())
                 if not os.path.exists(fpath):
-                    return self.send("Nothing recorded yet - add a product and run a check first.", "text/plain")
+                    return self.send("Nothing recorded yet - add a product first.", "text/plain; charset=utf-8")
                 with open(fpath, "rb") as f:
                     return self.send(f.read(), ctype, os.path.basename(fpath))
             with open(ui_file, "rb") as f:
@@ -824,30 +1084,66 @@ def run_web(port, host):
                 body = json.loads(self.rfile.read(n) or b"{}")
             except ValueError:
                 body = {}
+            try:
+                return self.route(body)
+            except Exception as e:
+                return self.send({"error": str(e)}, code=400)
+
+        def route(self, body):
             cfg = load_config()
             if self.path == "/api/add":
                 url = (body.get("url") or "").strip()
-                if not url.startswith("http"):
-                    return self.send({"error": "Paste the full product link, starting with https://"}, code=400)
+                m = re.search(r"https?://\S+", url)
+                if not m:
+                    return self.send({"error": "Paste the full product link (it starts with https://)"}, code=400)
+                url = m.group(0)
                 if any(p["url"] == url for p in cfg["products"]):
-                    return self.send({"error": "This product is already on your list"}, code=400)
+                    return self.send({"error": "This product is already being watched"}, code=400)
                 item = {"name": (body.get("name") or "").strip(), "url": url}
                 if to_num(str(body.get("target") or "")):
                     item["target_price"] = to_num(str(body["target"]))
                 cfg["products"].append(item)
                 save_config(cfg)
-                WAKE.set()   # check the new product right away
+                WAKE.set()
+            elif self.path == "/api/update":
+                for p in cfg["products"]:
+                    if p["url"] == body.get("url"):
+                        if "active" in body:
+                            p["active"] = bool(body["active"])
+                        if "name" in body:
+                            p["name"] = str(body["name"]).strip()
+                        if "target" in body:
+                            t = to_num(str(body["target"] or ""))
+                            if t:
+                                p["target_price"] = t
+                            else:
+                                p.pop("target_price", None)
+                save_config(cfg)
             elif self.path == "/api/remove":
                 cfg["products"] = [p for p in cfg["products"] if p["url"] != body.get("url")]
                 save_config(cfg)
             elif self.path == "/api/check":
                 if PROGRESS["running"]:
                     return self.send({"ok": True, "already": True})
+                FORCE.set()
                 WAKE.set()
-            elif self.path == "/api/test-notify":
-                sent = notify_all(cfg, "✅ Stock tracker test", "Notifications are working!\n" +
-                                  now(cfg).strftime("%d %b %Y, %I:%M %p"))
+            elif self.path == "/api/settings":
+                api_settings_save(body)
+            elif self.path == "/api/test":
+                ch = body.get("channel")
+                sent, errs = notify_all(cfg, "✅ Test alert from Restock Watch", "", alert=dict(SAMPLE_ALERT, when=now(cfg).strftime("%d %b %Y, %I:%M:%S %p")), only=ch)
+                if errs:
+                    return self.send({"error": errs.get(ch) or next(iter(errs.values()))}, code=400)
+                if ch == "desktop":
+                    try:
+                        import plyer  # noqa
+                    except ImportError:
+                        return self.send({"error": "Desktop pop-ups need: pip install plyer"}, code=400)
                 return self.send({"ok": True, "sent": sent})
+            elif self.path == "/api/telegram/find":
+                token = (body.get("bot_token") or "").strip() or str(
+                    (cfg["notifications"].get("telegram") or {}).get("bot_token", ""))
+                return self.send(telegram_find_chat(token))
             self.send({"ok": True})
 
     if not port_is_free(port, host):
@@ -855,9 +1151,9 @@ def run_web(port, host):
         print(f"Port {port} is busy -> using free port {new} instead")
         port = new
     srv = ThreadingHTTPServer((host, port), Handler)
-    threading.Thread(target=run_forever, args=(load_config(),), daemon=True).start()
+    threading.Thread(target=run_forever, daemon=True).start()
     link = f"http://localhost:{port}"
-    print(f"\nDashboard: {link}   (tracking runs in background, Ctrl+C to stop)\n")
+    print(f"\n  Restock Watch is running:  {link}\n  Keep this window open (minimise it). Ctrl+C to stop.\n")
     if os.environ.get("NO_BROWSER") != "1":
         try:
             import webbrowser
@@ -915,16 +1211,19 @@ def main():
     elif args.cmd == "once":
         check_all(cfg)
     elif args.cmd == "run":
-        run_forever(cfg)
+        print("Tracking... (Ctrl+C to stop)")
+        run_forever()
     elif args.cmd == "report":
         x, p = build_reports(cfg)
         print("Saved:", x, "and", p)
     elif args.cmd == "summary":
         daily_summary(cfg)
     elif args.cmd == "test-notify":
-        sent = notify_all(cfg, "✅ Stock tracker test", "If you can read this, notifications work!\n" +
-                          now(cfg).strftime("%d %b %Y, %I:%M %p"))
-        print("Sent to:", ", ".join(sent) or "nothing - enable a channel in config.yaml")
+        sent, errs = notify_all(cfg, "✅ Test alert from Restock Watch", "",
+                                alert=dict(SAMPLE_ALERT, when=now(cfg).strftime("%d %b %Y, %I:%M:%S %p")))
+        print("Sent to:", ", ".join(sent) or "nothing - enable a channel on the dashboard's Alerts page")
+        for k, v in errs.items():
+            print(f"  {k}: {v}")
     else:
         ap.print_help()
 
