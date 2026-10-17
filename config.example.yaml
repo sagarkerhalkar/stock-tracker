@@ -5,7 +5,7 @@
 settings:
   timezone: Asia/Kolkata            # all dates/times in Indian time
   check_every_minutes: 15           # how often to check (don't go below 5 - sites may block you)
-  delay_between_products_seconds: [5, 12]
+  delay_between_products_seconds: [3, 6]   # wait between 2 products of the SAME site (different sites run in parallel)
   use_browser: auto                 # auto | always | never  (auto = use real Chrome only if blocked)
   notify_on_first_check: true       # send a message the first time a product is checked
   alert_after_failures: 6           # warn you if a page can't be read this many times in a row
@@ -32,6 +32,9 @@ products:
 #  NOTIFICATIONS  - set enabled: true for the ones you want
 # --------------------------------------------------------------------
 notifications:
+
+  desktop:                          # pop-up on this PC when stock changes
+    enabled: true
 
   telegram:                         # FREE, easiest & most reliable
     enabled: false

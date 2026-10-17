@@ -57,7 +57,12 @@ CHECK_FIELDS = ["date", "time", "product", "site", "status", "price", "detail", 
 # --------------------------------------------------------------------------- config / state
 def load_config():
     if not os.path.exists(CONFIG_FILE):
-        sys.exit("config.yaml not found. Copy config.example.yaml to config.yaml and edit it.")
+        # first run: create config.yaml from the example, with an empty product list
+        with open(os.path.join(BASE, "config.example.yaml"), encoding="utf-8") as f:
+            text = f.read()
+        a, b = text.index("products:"), text.index("# ----", text.index("products:"))
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            f.write(text[:a] + "products: []\n\n" + text[b:])
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
     cfg.setdefault("settings", {})
@@ -190,7 +195,29 @@ def text_of(el):
     return re.sub(r"\s+", " ", el.get_text(" ", strip=True)) if el else ""
 
 
+def inr(value):
+    """'44990' / '₹69,900.00' -> '₹44,990' / '₹69,900' (Indian comma style)."""
+    m = re.search(r"[\d,]+(?:\.\d+)?", str(value or ""))
+    if not m:
+        return ""
+    try:
+        n = float(m.group(0).replace(",", ""))
+    except ValueError:
+        return ""
+    whole, paise = int(n), round(n - int(n), 2)
+    t = str(whole)
+    if len(t) > 3:
+        head, tail = t[:-3], t[-3:]
+        head = ",".join([head[max(0, i - 2):i] for i in range(len(head), 0, -2)][::-1])
+        t = head + "," + tail
+    return "₹" + t + (f"{paise:.2f}"[1:] if paise else "")
+
+
 def find_price(soup, html):
+    return inr(_find_price(soup, html))
+
+
+def _find_price(soup, html):
     for sel in ["#corePriceDisplay_desktop_feature_div .a-price .a-offscreen", "#corePrice_feature_div .a-offscreen",
                 "#priceblock_dealprice", "#priceblock_ourprice", ".a-price .a-offscreen",
                 "div.Nx9bqj", "div._30jeq3", "[itemprop=price]", "meta[property='product:price:amount']"]:
@@ -311,8 +338,9 @@ def notify_all(cfg, subject, message, attach=None):
     n = cfg["notifications"]
     sent = []
     for name, fn in [("telegram", send_telegram), ("whatsapp", send_whatsapp), ("google_chat", send_google_chat),
-                     ("email", send_email), ("discord", send_discord), ("slack", send_slack), ("ntfy", send_ntfy)]:
-        c = n.get(name) or {}
+                     ("email", send_email), ("discord", send_discord), ("slack", send_slack), ("ntfy", send_ntfy),
+                     ("desktop", send_desktop)]:
+        c = n.get(name) or ({"enabled": True} if name == "desktop" else {})
         if not c.get("enabled"):
             continue
         try:
@@ -324,6 +352,15 @@ def notify_all(cfg, subject, message, attach=None):
         except Exception as e:
             print(f"   ! {name} failed: {e}")
     return sent
+
+
+def send_desktop(c, subject, msg):
+    """Pop-up notification on this computer (Windows/Mac/Linux). Needs: pip install plyer"""
+    try:
+        from plyer import notification
+    except ImportError:
+        return
+    notification.notify(title=subject[:63], message=msg[:250], app_name="Stock Tracker", timeout=15)
 
 
 def send_telegram(c, subject, msg):
@@ -524,18 +561,59 @@ def build_pdf(cfg, events, state, periods):
 
 
 # --------------------------------------------------------------------------- main logic
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+CHECK_LOCK = threading.Lock()
+WAKE = threading.Event()
+PROGRESS = {"running": False, "done": 0, "total": 0, "current": "", "next_check": None, "last_run": None}
+
+
+def _check_site_group(group, s):
+    """Products of the SAME site run one after another (polite); different sites run in parallel."""
+    out = []
+    for i, p in enumerate(group):
+        PROGRESS["current"] = p.get("name") or p["url"]
+        try:
+            res = check_product(p, s)
+        except Exception as e:
+            res = {"status": UNKNOWN, "price": "", "detail": f"error: {e}", "site": site_name(p["url"])}
+        out.append((p, res))
+        PROGRESS["done"] += 1
+        if i < len(group) - 1:
+            time.sleep(random.uniform(*s.get("delay_between_products_seconds", [3, 6])))
+    return out
+
+
 def check_all(cfg, send=True):
-    state = load_state()
+    if not CHECK_LOCK.acquire(blocking=False):
+        print("A check is already running - skipped.")
+        return False
+    try:
+        return _check_all(cfg, send)
+    finally:
+        PROGRESS.update(running=False, current="", last_run=now(cfg).strftime("%Y-%m-%d %H:%M:%S"))
+        CHECK_LOCK.release()
+
+
+def _check_all(cfg, send):
     s = cfg["settings"]
-    changes = []
     products = [p for p in cfg["products"] if p.get("active", True)]
     if not products:
         print("No products yet. Add one:  python stock_tracker.py add <url> --name \"Product\"")
-        return
-    for i, p in enumerate(products):
+        return True
+    PROGRESS.update(running=True, done=0, total=len(products), current="")
+    groups = {}
+    for p in products:
+        groups.setdefault(site_name(p["url"]), []).append(p)
+    with ThreadPoolExecutor(max_workers=min(6, len(groups))) as ex:
+        results = [r for chunk in ex.map(lambda g: _check_site_group(g, s), groups.values()) for r in chunk]
+
+    state = load_state()
+    changes = []
+    for p, res in results:
         t = now(cfg)
         date, clock = t.strftime("%Y-%m-%d"), t.strftime("%H:%M:%S")
-        res = check_product(p, s)
         name = p.get("name") or res.get("title") or p["url"]
         prev = state.get(p["url"], {})
         old = prev.get("status")
@@ -544,7 +622,8 @@ def check_all(cfg, send=True):
                                               "status": res["status"], "price": res["price"], "detail": res["detail"],
                                               "url": p["url"]})
         entry = dict(prev)
-        entry.update({"last_checked": f"{date} {clock}", "title": res.get("title", prev.get("title", ""))})
+        entry.update({"last_checked": f"{date} {clock}", "title": res.get("title") or prev.get("title", ""),
+                      "detail": res["detail"]})
         if res["price"]:
             entry["price"] = res["price"]
         if res["status"] == UNKNOWN:
@@ -552,7 +631,6 @@ def check_all(cfg, send=True):
             if entry["fails"] == int(s.get("alert_after_failures", 6)) and send:
                 notify_all(cfg, "⚠️ Stock tracker can't read a page",
                            f"{name}\nCould not read the page {entry['fails']} times in a row ({res['detail']}).\n{p['url']}")
-            state[p["url"]] = entry
         else:
             entry["fails"] = 0
             if res["status"] != old:
@@ -567,7 +645,6 @@ def check_all(cfg, send=True):
                                                       "event": event, "old_status": old or "-", "new_status": res["status"],
                                                       "price": res["price"], "url": p["url"], "note": res["detail"]})
                 changes.append((name, event, res, p, date, clock, prev))
-            # price-drop alert
             target = p.get("target_price")
             pnum = to_num(res["price"])
             if target and pnum and pnum <= float(target) and res["status"] == IN and not prev.get("target_hit"):
@@ -576,14 +653,12 @@ def check_all(cfg, send=True):
             elif target and pnum and pnum > float(target):
                 entry["target_hit"] = False
         state[p["url"]] = entry
-        save_state(state)
-        if i < len(products) - 1:
-            time.sleep(random.uniform(*s.get("delay_between_products_seconds", [5, 12])))
+    save_state(state)
 
     xlsx, pdf = build_reports(cfg)
     for name, event, res, p, date, clock, prev in changes:
         first = event.startswith("FIRST")
-        if first and not cfg["settings"].get("notify_on_first_check", True):
+        if first and not s.get("notify_on_first_check", True):
             continue
         icon = "🟢" if IN in event or "BACK" in event else "🔴" if "OUT" in event else "💰" if "PRICE" in event else "ℹ️"
         when = datetime.strptime(f"{date} {clock}", "%Y-%m-%d %H:%M:%S").strftime("%d %b %Y, %I:%M:%S %p")
@@ -594,9 +669,13 @@ def check_all(cfg, send=True):
             lines.append(f"Previous status: {prev.get('status')} since {prev['since']}")
         lines.append(p["url"])
         if send:
-            sent = notify_all(cfg, f"{icon} {event}", "\n".join(lines),
+            title = {"FIRST CHECK - IN STOCK": "✅ AVAILABLE NOW", "FIRST CHECK - OUT OF STOCK": "⛔ NOT AVAILABLE (out of stock)",
+                     "WENT OUT OF STOCK": "🔴 WENT OUT OF STOCK", "BACK IN STOCK": "🟢 BACK IN STOCK - available again!"}.get(
+                event, f"{icon} {event}")
+            sent = notify_all(cfg, title, "\n".join(lines),
                               attach=[xlsx, pdf] if cfg["notifications"].get("email", {}).get("attach_reports") else None)
             print(f"   -> notified: {', '.join(sent) or 'no channel enabled'}")
+    return True
 
 
 def to_num(price):
@@ -638,14 +717,18 @@ def run_forever(cfg_initial):
                 print("Summary error:", e)
         mins = float(s.get("check_every_minutes", 15))
         wait = mins * 60 * random.uniform(0.85, 1.15)
+        PROGRESS["next_check"] = time.time() + wait
         print(f"Next check in {wait / 60:.1f} min  (Ctrl+C to stop)\n")
-        time.sleep(wait)
+        WAKE.wait(wait)   # the dashboard's "Check now" button wakes this up early
+        WAKE.clear()
 
 
 # --------------------------------------------------------------------------- ports + web dashboard
 def port_is_free(port, host="0.0.0.0"):
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if os.name != "nt":   # ignore ports that are only closing (TIME_WAIT); never used on Windows
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((host, port))
             return True
@@ -674,86 +757,98 @@ def show_ports(start, end):
         print("  lsof -iTCP -sTCP:LISTEN -P -n    or    ss -ltnp")
 
 
+def api_state():
+    cfg, state = load_config(), load_state()
+    products = []
+    for p in cfg["products"]:
+        s = state.get(p["url"], {})
+        products.append({"name": p.get("name") or s.get("title") or "", "url": p["url"], "site": site_name(p["url"]),
+                         "status": s.get("status", "NOT CHECKED"), "since": s.get("since", ""),
+                         "price": s.get("price", ""), "last_checked": s.get("last_checked", ""),
+                         "target": p.get("target_price"), "detail": s.get("detail", ""),
+                         "fails": s.get("fails", 0), "active": p.get("active", True)})
+    n = cfg["notifications"]
+    channels = [k.replace("_", " ").title() for k, v in n.items() if isinstance(v, dict) and v.get("enabled")]
+    if "desktop" not in n:
+        channels.insert(0, "Desktop")
+    nxt = PROGRESS.get("next_check")
+    return {"products": products, "events": list(reversed(read_csv(EVENTS_CSV)[-60:])),
+            "progress": {k: PROGRESS[k] for k in ("running", "done", "total", "current", "last_run")},
+            "next_check_in": max(0, int(nxt - time.time())) if nxt else None,
+            "every_minutes": cfg["settings"].get("check_every_minutes", 15),
+            "now": now(cfg).strftime("%Y-%m-%d %H:%M:%S"), "channels": channels}
+
+
 def run_web(port, host):
-    import html as H
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from urllib.parse import parse_qs
 
-    def page():
-        cfg, state = load_config(), load_state()
-        rows = ""
-        for i, p in enumerate(cfg["products"], 1):
-            s = state.get(p["url"], {})
-            st_ = s.get("status", "not checked")
-            color = "#d4edda" if st_ == IN else "#f8d7da" if st_ == OUT else "#eee"
-            rows += (f"<tr><td>{i}</td><td><a href='{H.escape(p['url'])}' target=_blank>"
-                     f"{H.escape(p.get('name') or s.get('title') or p['url'])}</a></td><td>{site_name(p['url'])}</td>"
-                     f"<td style='background:{color}'>{st_}</td><td>{H.escape(s.get('since', ''))}</td>"
-                     f"<td>{H.escape(s.get('price', ''))}</td><td>{H.escape(s.get('last_checked', ''))}</td>"
-                     f"<td><form method=post action=/remove><input type=hidden name=n value={i}>"
-                     f"<button>Remove</button></form></td></tr>")
-        ev = "".join(f"<tr><td>{e['date']} {e['time']}</td><td>{H.escape(e['product'])}</td><td>{e['site']}</td>"
-                     f"<td>{e['event']}</td><td>{H.escape(e.get('price', ''))}</td></tr>"
-                     for e in reversed(read_csv(EVENTS_CSV)[-50:]))
-        return f"""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width">
-<meta http-equiv=refresh content=60><title>Stock Tracker</title>
-<style>body{{font-family:system-ui;margin:16px;background:#fafafa}}table{{border-collapse:collapse;width:100%;background:#fff}}
-td,th{{border:1px solid #ddd;padding:6px;font-size:14px}}th{{background:#1f3a5f;color:#fff}}input{{padding:6px}}</style>
-<h2>Stock Tracker</h2>
-<form method=post action=/add>
-<input name=url placeholder="Product link (Amazon, Flipkart...)" size=60 required>
-<input name=name placeholder="Name"> <input name=target placeholder="Target price" size=10>
-<button>Add product</button></form>
-<p><form method=post action=/check style=display:inline><button>Check now</button></form>
-<a href=/excel>Download Excel</a> · <a href=/pdf>Download PDF</a> · <a href=/csv>Download CSV</a></p>
-<table><tr><th>#</th><th>Product</th><th>Site</th><th>Status</th><th>Since</th><th>Price</th><th>Last checked</th><th></th></tr>{rows}</table>
-<h3>Recent changes</h3><table><tr><th>When</th><th>Product</th><th>Site</th><th>Event</th><th>Price</th></tr>{ev}</table>"""
+    ui_file = os.path.join(BASE, "dashboard.html")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
 
-        def send(self, body, ctype="text/html; charset=utf-8", name=None):
+        def send(self, body, ctype="application/json", name=None, code=200):
+            if isinstance(body, (dict, list)):
+                body = json.dumps(body, ensure_ascii=False)
             data = body if isinstance(body, bytes) else body.encode("utf-8")
-            self.send_response(200)
+            self.send_response(code)
             self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
             if name:
                 self.send_header("Content-Disposition", f'attachment; filename="{name}"')
             self.end_headers()
             self.wfile.write(data)
 
         def do_GET(self):
+            path = self.path.split("?")[0]
             files = {"/excel": (XLSX_FILE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-                     "/pdf": (PDF_FILE, "application/pdf"), "/csv": (EVENTS_CSV, "text/csv")}
-            if self.path in files:
-                path, ctype = files[self.path]
-                if self.path != "/csv":
+                     "/pdf": (PDF_FILE, "application/pdf"), "/csv": (EVENTS_CSV, "text/csv; charset=utf-8")}
+            if path == "/api/state":
+                return self.send(api_state())
+            if path in files:
+                fpath, ctype = files[path]
+                if path != "/csv":
                     build_reports(load_config())
-                if not os.path.exists(path):
-                    return self.send("Nothing recorded yet.")
-                with open(path, "rb") as f:
-                    return self.send(f.read(), ctype, os.path.basename(path))
-            self.send(page())
+                if not os.path.exists(fpath):
+                    return self.send("Nothing recorded yet - add a product and run a check first.", "text/plain")
+                with open(fpath, "rb") as f:
+                    return self.send(f.read(), ctype, os.path.basename(fpath))
+            with open(ui_file, "rb") as f:
+                self.send(f.read(), "text/html; charset=utf-8")
 
         def do_POST(self):
-            n = int(self.headers.get("Content-Length", 0))
-            form = {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode()).items()}
+            n = int(self.headers.get("Content-Length", 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                body = {}
             cfg = load_config()
-            if self.path == "/add" and form.get("url"):
-                item = {"name": form.get("name", ""), "url": form["url"].strip()}
-                if to_num(form.get("target", "")):
-                    item["target_price"] = to_num(form["target"])
+            if self.path == "/api/add":
+                url = (body.get("url") or "").strip()
+                if not url.startswith("http"):
+                    return self.send({"error": "Paste the full product link, starting with https://"}, code=400)
+                if any(p["url"] == url for p in cfg["products"]):
+                    return self.send({"error": "This product is already on your list"}, code=400)
+                item = {"name": (body.get("name") or "").strip(), "url": url}
+                if to_num(str(body.get("target") or "")):
+                    item["target_price"] = to_num(str(body["target"]))
                 cfg["products"].append(item)
                 save_config(cfg)
-            elif self.path == "/remove":
-                cfg["products"].pop(int(form["n"]) - 1)
+                WAKE.set()   # check the new product right away
+            elif self.path == "/api/remove":
+                cfg["products"] = [p for p in cfg["products"] if p["url"] != body.get("url")]
                 save_config(cfg)
-            elif self.path == "/check":
-                threading.Thread(target=check_all, args=(cfg,), daemon=True).start()
-            self.send_response(303)
-            self.send_header("Location", "/")
-            self.end_headers()
+            elif self.path == "/api/check":
+                if PROGRESS["running"]:
+                    return self.send({"ok": True, "already": True})
+                WAKE.set()
+            elif self.path == "/api/test-notify":
+                sent = notify_all(cfg, "✅ Stock tracker test", "Notifications are working!\n" +
+                                  now(cfg).strftime("%d %b %Y, %I:%M %p"))
+                return self.send({"ok": True, "sent": sent})
+            self.send({"ok": True})
 
     if not port_is_free(port, host):
         new = find_free_port(port + 1)
@@ -761,7 +856,14 @@ td,th{{border:1px solid #ddd;padding:6px;font-size:14px}}th{{background:#1f3a5f;
         port = new
     srv = ThreadingHTTPServer((host, port), Handler)
     threading.Thread(target=run_forever, args=(load_config(),), daemon=True).start()
-    print(f"\nDashboard: http://localhost:{port}   (tracking runs in background, Ctrl+C to stop)\n")
+    link = f"http://localhost:{port}"
+    print(f"\nDashboard: {link}   (tracking runs in background, Ctrl+C to stop)\n")
+    if os.environ.get("NO_BROWSER") != "1":
+        try:
+            import webbrowser
+            threading.Timer(1.2, lambda: webbrowser.open(link)).start()
+        except Exception:
+            pass
     srv.serve_forever()
 
 

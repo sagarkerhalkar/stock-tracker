@@ -29,23 +29,33 @@ https://www.flipkart.com/...
 
 1. Install **Python 3.10+** from python.org – tick **"Add Python to PATH"** during install.
 2. Unzip this folder, double-click **`1_INSTALL.bat`**.
-3. Open **`config.yaml`** in Notepad:
-   - Under `products:` paste your product links (delete the two examples).
-   - Turn on the notification channels you want (`enabled: true`) – see below.
-4. Double-click **`3_TEST_NOTIFICATIONS.bat`** – you should receive a test message.
-5. Double-click **`2_START_TRACKING.bat`** and keep that window open. Done.
+3. Double-click **`2_START.bat`**, press Enter (or type a port number). The dashboard opens in your browser.
+4. Click **Turn on pop-up alerts** and allow notifications.
+5. Paste product links into the box at the top and click **Start watching**.
+6. Optional: turn on Telegram / WhatsApp / Google Chat / Email in **`config.yaml`** (see below),
+   then click **Send a test alert** on the dashboard.
 
-Mac/Linux: `pip install -r requirements.txt && playwright install chromium`, copy `config.example.yaml` to `config.yaml`, then `python stock_tracker.py run`.
+Keep the black window open (you can minimise it) – tracking runs as long as it's open.
 
-## Web dashboard & ports
+Mac/Linux: `pip install -r requirements.txt && playwright install chromium`, copy `config.example.yaml` to `config.yaml`, then `python stock_tracker.py web`.
 
-`2_START_TRACKING.bat` uses **no port at all**. A port is only needed for the optional
-web dashboard (add/remove products, see status, download Excel/PDF in your browser):
+## The dashboard
 
-- Double-click **`4_START_DASHBOARD.bat`**, type a port (or press Enter for 8787), open the link it prints.
-- Or: `python stock_tracker.py web --port 9123`
-- **If the port is busy, it automatically picks the next free one** and prints the new link.
-- To make a port permanent, set `web_port:` in `config.yaml`.
+- Every product is a box on a shelf. **Lit in saffron = in stock.** Dimmed = out of stock.
+- The box **flips over** the moment its stock changes, with a sound, an on-screen message,
+  a pop-up on your PC, and a message on every channel you've turned on.
+- You're alerted for all three moments: **available**, **went out of stock**, **back in stock**
+  (and a price drop if you set "Alert below ₹").
+- "What changed" shows every change with exact date and time. Excel / PDF / CSV buttons download the full history.
+- The top pill shows the countdown to the next check, or live progress while checking.
+- Updates appear live – no page reloads. Different shopping sites are checked at the same time, so a full check takes seconds.
+
+## Ports
+
+- `2_START.bat` asks for a port; press Enter for 8787. **If that port is busy, it picks the next free one automatically**
+  and opens it in your browser.
+- Or: `python stock_tracker.py web --port 9123`. To make a port permanent, set `web_port:` in `config.yaml`.
+- `4_RUN_WITHOUT_DASHBOARD.bat` tracks and alerts with **no port at all**.
 
 Find out which ports are busy:
 - Double-click **`5_CHECK_PORTS.bat`**, or run `python stock_tracker.py ports --from 8000 --to 9000`
@@ -53,6 +63,7 @@ Find out which ports are busy:
 - Mac/Linux: `lsof -iTCP -sTCP:LISTEN -P -n`
 
 To open the dashboard on your phone (same Wi-Fi), set `web_host: 0.0.0.0` and open `http://<your-PC-IP>:<port>`.
+(Browser pop-ups only work on the PC itself; your phone gets alerts through Telegram/WhatsApp/ntfy.)
 
 ## Commands
 
@@ -61,7 +72,8 @@ python stock_tracker.py add "https://www.amazon.in/dp/XXXX" --name "Boat headpho
 python stock_tracker.py list          # show all products and their status
 python stock_tracker.py remove 2      # remove product number 2
 python stock_tracker.py once          # check everything once now
-python stock_tracker.py run           # keep checking forever
+python stock_tracker.py web           # dashboard + tracking
+python stock_tracker.py run           # tracking only, no dashboard
 python stock_tracker.py report        # rebuild Excel + PDF
 python stock_tracker.py summary       # send summary + reports now
 python stock_tracker.py test-notify
@@ -103,5 +115,5 @@ If a page can't be read (site shows a captcha), the check counts as **UNKNOWN** 
 - Keep `check_every_minutes` at 10–15. Checking every minute gets you blocked by Amazon/Flipkart.
 - For limited "flash sale" drops, 5 minutes is the practical minimum.
 - To run it 24×7 without your PC, put the folder on any always-on machine (old laptop, Raspberry Pi, or a cheap cloud VM) and run `python stock_tracker.py run`.
-- To start automatically with Windows: press Win+R → `shell:startup` → put a shortcut to `2_START_TRACKING.bat` there.
+- To start automatically with Windows: press Win+R → `shell:startup` → put a shortcut to `2_START.bat` there.
 - Use it for personal tracking at a sensible rate; shopping sites' terms restrict heavy automated access.
