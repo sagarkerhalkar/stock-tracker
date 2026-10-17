@@ -42,6 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
+APP_VERSION = 3
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -967,7 +968,7 @@ def api_state():
     nxt = PROGRESS.get("next_check")
     events = list(reversed(read_csv(EVENTS_CSV)[-80:]))
     today = now(cfg).strftime("%Y-%m-%d")
-    return {"products": products, "events": events,
+    return {"app": "restock-watch", "version": APP_VERSION, "products": products, "events": events,
             "changes_today": sum(1 for e in events if e["date"] == today and not e["event"].startswith("FIRST")),
             "progress": {k: PROGRESS[k] for k in ("running", "done", "total", "current", "last_run")},
             "next_check_in": max(0, int(nxt - time.time())) if nxt else None,
@@ -1036,6 +1037,28 @@ def api_settings_save(body):
 
 SAMPLE_ALERT = {"product": "Test product - Restock Watch is connected", "site": "Amazon", "price": "₹1,999",
                 "url": "https://www.amazon.in/", "image": "", "previous": "This is a test. Real alerts look like this."}
+
+
+def stop_old_copy(port):
+    """If an older Restock Watch is already running on this port, ask it to close so the new one can take over."""
+    local = requests.Session()
+    local.trust_env = False   # never route localhost through a proxy
+    try:
+        r = local.get(f"http://127.0.0.1:{port}/api/state", timeout=3)
+        d = r.json()
+        if "products" not in d or d.get("version", 0) >= APP_VERSION and d.get("app") == "restock-watch":
+            return False      # not ours, or already the same version
+        local.post(f"http://127.0.0.1:{port}/api/stop", timeout=3)
+        for _ in range(10):
+            time.sleep(0.3)
+            if port_is_free(port):
+                print(f"Closed the older Restock Watch on port {port}.")
+                return True
+        print(f"\n  !! An OLDER Restock Watch is still running on port {port}.\n"
+              f"  !! Close its black window (or restart the PC), otherwise it keeps sending old-style alerts.\n")
+    except Exception:
+        pass
+    return False
 
 
 def run_web(port, host):
@@ -1140,12 +1163,19 @@ def run_web(port, host):
                     except ImportError:
                         return self.send({"error": "Desktop pop-ups need: pip install plyer"}, code=400)
                 return self.send({"ok": True, "sent": sent})
+            elif self.path == "/api/stop":
+                self.send({"ok": True})
+                print("\n  Stopped because a newer copy of Restock Watch was started.\n")
+                threading.Timer(0.3, lambda: os._exit(0)).start()
+                return
             elif self.path == "/api/telegram/find":
                 token = (body.get("bot_token") or "").strip() or str(
                     (cfg["notifications"].get("telegram") or {}).get("bot_token", ""))
                 return self.send(telegram_find_chat(token))
             self.send({"ok": True})
 
+    if not port_is_free(port, host):
+        stop_old_copy(port)
     if not port_is_free(port, host):
         new = find_free_port(port + 1)
         print(f"Port {port} is busy -> using free port {new} instead")

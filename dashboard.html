@@ -305,6 +305,14 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
+const APP_VERSION = 3;
+function outdated(){
+  if ($("#outdated")) return;
+  const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
+  b.innerHTML = `<div class="grow"><div class="t">Restart needed</div><div class="s">An older copy of Restock Watch is still running in the background, so this page can't show your products.
+    Close every black <b>Restock Watch</b> window (or restart your PC), then double-click <b>2_START.bat</b> again.</div></div>`;
+  $("#banners").prepend(b); $("#liveText").textContent = "Older version running";
+}
 let S = null, filter = "all", lastKey = null, gridSig = "", clockOffset = 0, nextAt = null, unseen = 0;
 let browserAlerts = false; try { browserAlerts = localStorage.getItem("rw-alerts") === "1"; } catch (e) {}
 
@@ -332,11 +340,17 @@ document.querySelectorAll("nav [data-page]").forEach(b => b.addEventListener("cl
 /* ---------- polling ---------- */
 async function load(){
   try {
-    S = await (await fetch("/api/state")).json();
+    S = await (await fetch("/api/state", {cache:"no-store"})).json();
+  } catch (e) { $("#liveText").textContent = "Restock Watch has stopped. Start it again with 2_START.bat"; $("#live").classList.remove("busy"); setTimeout(load, 3000); return; }
+  if ((S.version || 0) < APP_VERSION){ outdated(); setTimeout(load, 5000); return; }
+  $("#outdated")?.remove();
+  try {
     clockOffset = Date.now() - parseT(S.now);
     nextAt = S.next_check_in != null ? Date.now() + S.next_check_in*1000 : null;
+    S.products.forEach(p => { p.history = p.history || []; });
+    S.changes_today = S.changes_today || 0; S.channels = S.channels || [];
     renderAll(); detect();
-  } catch (e) { $("#liveText").textContent = "Restock Watch has stopped. Start it again with 2_START.bat"; $("#live").classList.remove("busy"); }
+  } catch (e) { console.error(e); }
   setTimeout(load, S?.progress?.running ? 1200 : 3000);
 }
 

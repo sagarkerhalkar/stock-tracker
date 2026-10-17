@@ -25,6 +25,14 @@ Keep the black window open (minimise it). Tracking stops when it's closed or the
 
 Mac/Linux: `pip install -r requirements.txt && python -m playwright install chromium`, then `python stock_tracker.py web`.
 
+## Updating to a new version
+
+1. Close every black **Restock Watch** window first (or restart your PC).
+2. Replace the files with the new ones – keep your `config.yaml` and `data` folder, they hold your products, alerts and history.
+3. Double-click `2_START.bat`.
+
+If you forget step 1, the dashboard shows **Restart needed**, and from this version on a new copy closes the old one by itself.
+
 ## How fast will I know?
 
 | Product is… | Checked every (default) | Why |
