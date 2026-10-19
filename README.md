@@ -125,7 +125,10 @@ Every report is organised **product by product**, so you can read one item's sto
 - A table of every period, latest first: **Status · From · To · How long it lasted · Price**
 
 Where to find it:
-- **Reports** page in the dashboard (pick one product or see all)
+- **Reports** page in the dashboard: each product is one tidy row (status, how often it came back, a green/red bar).
+  Click it to open **Patterns** (worked out automatically, e.g. "Usually comes back between 6 PM and 9 PM",
+  "typically stays available for about 15 min", "longest time out of stock") and the history grouped **by day**
+  (Today, Yesterday, …) – so even a long history stays easy to read. Use **Search products** to find one quickly.
 - **Excel** (`data/stock_report.xlsx`): *Summary* (one line per product), *Item-wise history* (one block per product), *All checks (raw)*
 - **PDF** (`data/stock_report.pdf`): an at-a-glance table, then one section per product
 - `data/events.csv`: the raw change log
@@ -141,10 +144,29 @@ A daily summary is sent at 9:00 AM (change `daily_summary_time` in `config.yaml`
 
 Restock Watch always runs on **http://localhost:8787**.
 - If an older Restock Watch is already using 8787, it is closed automatically and the new one takes over (its data stays on disk).
-- If a different program is using 8787, the black window tells you which one; close it (or restart the PC) and start again.
+- If a different program is using 8787, the black window names it; Restock Watch waits and tries again every minute.
   `5_CHECK_PORTS.bat` shows what is using 8787. To use another port permanently, change `web_port:` in `config.yaml`.
-- `4_RUN_WITHOUT_DASHBOARD.bat` tracks and alerts with no port at all.
-- Phone on the same Wi-Fi: set `web_host: 0.0.0.0` in `config.yaml` and open `http://<PC-IP>:8787` (anyone on that Wi-Fi can then open it).
+
+## Open from your phone or the internet (Cloudflare Tunnel)
+
+On the PC itself you never need a password. **From any other device – phone, another PC, or a Cloudflare link – a
+password is required**, so nobody else can change your products or alert settings.
+
+1. **Alerts → Open from phone or the internet → Set a password** (8+ characters).
+2. **Phone / PC on the same Wi-Fi:** tick **Allow devices on my network**. The page shows the address to open,
+   e.g. `http://192.168.1.5:8787`. The first time, Windows may ask to allow Python on private networks – click Allow.
+3. **From anywhere with Cloudflare Tunnel** (works even without step 2, because the tunnel runs on this PC):
+   - *Quick test, no account:* double-click **`9_CLOUDFLARE_TUNNEL.bat`**. It installs `cloudflared`
+     (`winget install --id Cloudflare.cloudflared`) if needed and runs `cloudflared tunnel --url http://localhost:8787`.
+     Open the `https://….trycloudflare.com` link it prints (a new link every time; keep that window open).
+   - *Permanent address on your own domain:* Cloudflare dashboard → Zero Trust → Networks → Tunnels → **Create a tunnel**
+     (Cloudflared) → choose Windows and run the install command it shows in an **Administrator** Command Prompt
+     (this installs cloudflared as a Windows service, so it also starts with Windows) → add a public hostname,
+     e.g. `stock.yourdomain.com`, Service **HTTP**, URL **localhost:8787**.
+   - Optional extra lock: put Cloudflare Access (email one-time code) in front of that hostname.
+
+Sign-in lasts 30 days per device; **Log out** is at the bottom of the left menu. After 5 wrong passwords that
+device must wait 10 minutes. Changing the password signs every other device out.
 
 ## Commands
 

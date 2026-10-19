@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 8
+APP_VERSION = 9
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -640,7 +640,47 @@ def product_timelines(cfg, events=None, state=None, include_removed=False, only=
             "tracking_since": periods[0]["start"] if periods else "",
             "periods": list(reversed(periods)),             # newest first
         })
+        out[-1]["insights"] = product_insights(out[-1], evs)
     return out
+
+
+def product_insights(it, evs):
+    """Plain-English patterns from a product's history, so a long history is easy to understand."""
+    tips = []
+    pers = list(reversed(it["periods"]))                       # oldest first
+    done_in = [p["secs"] for p in pers if p["status"] == IN and not p["ongoing"]]
+    done_out = [p["secs"] for p in pers if p["status"] == OUT and not p["ongoing"]]
+    backs = [datetime.strptime(f"{e['date']} {e['time']}", TS_FMT) for e in evs if e["event"] == "BACK IN STOCK"]
+    med = lambda xs: sorted(xs)[len(xs) // 2]
+    if pers and pers[-1]["ongoing"]:
+        last = pers[-1]
+        tips.append(("Available" if last["status"] == IN else "Out of stock") + f" right now, for {last['lasted']}.")
+    if backs:
+        tips.append(f"Last came back in stock on {backs[-1].strftime('%d %b at %I:%M %p').replace(' 0', ' ')}.")
+    if len(backs) >= 3:
+        hours = [b.hour + b.minute / 60 for b in backs]
+        best, best_n = 0, 0
+        for start in range(24):                                  # busiest 3-hour window (wraps past midnight)
+            n = sum(1 for h in hours if (h - start) % 24 < 3)
+            if n > best_n:
+                best, best_n = start, n
+        if best_n >= max(2, round(len(backs) * 0.5)):
+            fmt_h = lambda h: datetime(2000, 1, 1, h % 24).strftime("%I %p").lstrip("0")
+            tips.append(f"Usually comes back between {fmt_h(best)} and {fmt_h(best + 3)} "
+                        f"({best_n} of {len(backs)} restocks).")
+        gaps = [(b - a).total_seconds() for a, b in zip(backs, backs[1:])]
+        tips.append(f"Comes back roughly every {fmt_dur(med(gaps))}.")
+    if len(done_in) >= 2:
+        m = med(done_in)
+        tips.append(f"When it comes back it typically stays available for about {fmt_dur(m)}."
+                    + (" It sells out fast - keep Telegram/WhatsApp alerts on to catch it." if m <= 1800 else ""))
+    if done_out:
+        longest = max((p for p in pers if p["status"] == OUT and not p["ongoing"]), key=lambda p: p["secs"])
+        tips.append(f"Longest time out of stock: {longest['lasted']} (from {short_when(longest['start'])}).")
+    prices = sorted({to_num(p["price"]) for p in pers if to_num(p["price"])})
+    if len(prices) >= 2:
+        tips.append(f"Price has moved between {inr(prices[0])} and {inr(prices[-1])}.")
+    return tips
 
 
 def build_reports(cfg):
@@ -722,7 +762,8 @@ def build_excel(cfg, items, checks, path=None):
     ws = wb.active
     ws.title = "Summary"
     cols = ["Product", "Site", "Status now", "Since", "Price", "Came back in stock", "Went out of stock",
-            "Total time available", "Total time out of stock", "Available % of time", "Tracking since", "Link"]
+            "Total time available", "Total time out of stock", "Available % of time", "Tracking since", "Link",
+            "Pattern (automatic)"]
     header(ws, 1, cols)
     for r, it in enumerate(items, 2):
         vals = [it["name"] + ("  (removed)" if it["removed"] else ""), it["site"], _status_word(it["status"]),
@@ -735,11 +776,12 @@ def build_excel(cfg, items, checks, path=None):
             cell.alignment = Alignment(vertical="top", wrap_text=(c == 1))
         ws.cell(r, 3).fill = status_fill(it["status"])
         ws.cell(r, 3).font = Font(bold=True)
+        ws.cell(r, 13, " ".join(it.get("insights", [])[1:])).alignment = Alignment(wrap_text=True, vertical="top")
         if it["url"].startswith("http"):
             ws.cell(r, 12).hyperlink = it["url"]
             ws.cell(r, 12).value = "Open"
             ws.cell(r, 12).font = Font(color="1D6FE0", underline="single")
-    for i, w in enumerate([46, 14, 16, 22, 12, 12, 12, 14, 14, 12, 22, 8], 1):
+    for i, w in enumerate([46, 14, 16, 22, 12, 12, 12, 14, 14, 12, 22, 8, 70], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "B2"
 
@@ -873,6 +915,8 @@ def build_pdf(cfg, items, path=None):
             block.append(P(f"Came back in stock {it['came_back']} times, went out of stock {it['went_out']} times.  "
                            f"Available {it['time_in']} in total, out of stock {it['time_out']} "
                            f"({it['pct_in']}% available).", meta))
+            for tip in it.get("insights", [])[1:5]:
+                block.append(P("- " + tip, meta))
             block += [Spacer(1, 2 * mm), timeline_bar(it), Spacer(1, 4 * mm)]
             prow = [[_status_word(p["status"], p["ongoing"]), fmt_when(p["start"]),
                      "still now" if p["ongoing"] else fmt_when(p["end"] or it["last_checked"]), p["lasted"], p["price"]]
@@ -1367,6 +1411,7 @@ def api_settings_get():
     return {"channels": out, "check_every_minutes": s.get("check_every_minutes", 5),
             "fast_check_minutes": s.get("fast_check_minutes", 2), "daily_summary_time": s.get("daily_summary_time", ""),
             "start_with_windows": bool(s.get("start_with_windows", True)), "windows": os.name == "nt",
+            "password_set": bool(s.get("web_password_hash")), "allow_remote": bool(s.get("allow_remote", False)),
             "port": int(s.get("web_port", 8787))}
 
 
@@ -1497,7 +1542,7 @@ def stop_old_copy(port):
     if "products" not in d:
         return False          # something else, not Restock Watch
     try:
-        local.post(f"http://127.0.0.1:{port}/api/stop", timeout=3)
+        local.post(f"http://127.0.0.1:{port}/api/stop", json={}, timeout=3)
     except Exception:
         pass
     for _ in range(15):
@@ -1530,7 +1575,105 @@ def who_uses_port(port):
         return ""
 
 
-def run_web(port, host):
+# --------------------------------------------------------------------------- access from other devices / Cloudflare Tunnel
+import hashlib
+import hmac
+import secrets
+import socket
+
+SESSION_DAYS = 30
+LOGIN_FAILS = {}            # ip -> [failures, blocked_until]
+LOCAL_ONLY = {"/api/stop", "/api/restore", "/api/olddata"}   # never allowed from outside this PC
+SERVER = {"srv": None, "rebind": False}
+
+
+def hash_password(pw):
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt), 200_000).hex()
+    return f"pbkdf2${salt}${h}"
+
+
+def check_password(pw, stored):
+    try:
+        _, salt, h = str(stored).split("$")
+        test = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt), 200_000).hex()
+        return hmac.compare_digest(test, h)
+    except Exception:
+        return False
+
+
+def _secret(cfg):
+    s = cfg["settings"]
+    if not s.get("web_secret"):
+        s["web_secret"] = secrets.token_hex(32)
+        save_config(cfg)
+    return s["web_secret"]
+
+
+def make_session(cfg):
+    exp = int(time.time()) + SESSION_DAYS * 86400
+    pw = str(cfg["settings"].get("web_password_hash", ""))[-16:]     # changing the password logs everyone out
+    sig = hmac.new(_secret(cfg).encode(), f"{exp}|{pw}".encode(), "sha256").hexdigest()
+    return f"{exp}.{sig}"
+
+
+def valid_session(cfg, token):
+    try:
+        exp, sig = token.split(".", 1)
+        if int(exp) < time.time() or not cfg["settings"].get("web_password_hash"):
+            return False
+        pw = str(cfg["settings"].get("web_password_hash", ""))[-16:]
+        good = hmac.new(_secret(cfg).encode(), f"{exp}|{pw}".encode(), "sha256").hexdigest()
+        return hmac.compare_digest(good, sig)
+    except Exception:
+        return False
+
+
+def lan_ips():
+    ips = set()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))          # no traffic is sent; just picks the main network card
+        ips.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except OSError:
+        pass
+    return sorted(ip for ip in ips if not ip.startswith(("127.", "169.254.")))
+
+
+LOGIN_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in - Restock Watch</title><style>
+:root{--bg:#F3F5F9;--card:#fff;--ink:#101828;--muted:#5B6475;--line:#E3E7EF;--brand:#1D6FE0;--bad:#D93025}
+@media (prefers-color-scheme:dark){:root{--bg:#0B1220;--card:#121B2E;--ink:#E7ECF5;--muted:#A3AEC4;--line:#22304A;--brand:#4C8DF0;--bad:#F2655A}}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);
+font:500 15px/1.5 Manrope,system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px}
+form{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:28px;width:min(380px,100%);box-shadow:0 18px 36px -12px rgba(16,24,40,.25)}
+h1{font-size:22px;margin:12px 0 4px}p{color:var(--muted);margin:0 0 18px;font-size:14px}
+input{width:100%;padding:12px 14px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit;margin-bottom:12px}
+button{width:100%;padding:12px;border:0;border-radius:10px;background:var(--brand);color:#fff;font:inherit;font-weight:700;cursor:pointer}
+.err{color:var(--bad);font-weight:600;margin:0 0 12px}</style></head><body>
+<form method="post" action="/login"><svg width="34" height="34" viewBox="0 0 28 28" aria-hidden="true"><rect x="2" y="2" width="24" height="24" rx="7" fill="#1D6FE0"/><path d="M8 15.5l3.6 3.5L20 10" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+<h1>Restock Watch</h1>{{MSG}}</form></body></html>"""
+
+
+def login_page(msg="", error="", setup_needed=False):
+    if setup_needed:
+        body = ("<p>Opening Restock Watch from another device isn't set up yet.</p>"
+                "<p>On the PC that runs Restock Watch, open <b>http://localhost:8787</b>, go to <b>Alerts</b> &rarr; "
+                "<b>Open from phone or internet</b> and set a password. Then come back here.</p>")
+    else:
+        body = ((f'<p class="err">{error}</p>' if error else "<p>Enter your Restock Watch password.</p>") +
+                '<input type="password" name="password" placeholder="Password" autofocus required autocomplete="current-password">'
+                '<button type="submit">Sign in</button>')
+    return LOGIN_PAGE.replace("{{MSG}}", msg + body)
+
+
+def run_web(port, host=None):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     ui_file = os.path.join(BASE, "dashboard.html")
@@ -1538,6 +1681,77 @@ def run_web(port, host):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
+
+        # ---- who is asking?
+        def is_local(self):
+            """Someone sitting at this PC (not through Cloudflare, not another device)."""
+            ip = self.client_address[0]
+            if ip not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+                return False
+            if any(self.headers.get(h) for h in ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "Forwarded")):
+                return False
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
+            return host in ("localhost", "127.0.0.1", "::1", "")
+
+        def client_ip(self):
+            return (self.headers.get("Cf-Connecting-Ip") or (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+                    or self.client_address[0])
+
+        def cookie(self, name):
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == name:
+                    return v
+            return ""
+
+        def authed(self, cfg):
+            return self.is_local() or valid_session(cfg, self.cookie("rw_session"))
+
+        def redirect(self, where, cookie=None):
+            self.send_response(303)
+            self.send_header("Location", where)
+            if cookie is not None:
+                self.send_header("Set-Cookie", cookie)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+
+        def session_cookie(self, value, max_age):
+            secure = "; Secure" if (self.headers.get("X-Forwarded-Proto") or "").lower() == "https" else ""
+            return f"rw_session={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}"
+
+        def gate(self, path):
+            """True = carry on. Otherwise the answer (login page / 401 / 403) has already been sent."""
+            cfg = load_config()
+            if path in LOCAL_ONLY and not self.is_local():
+                self.send({"error": "Only allowed on the PC that runs Restock Watch"}, code=403)
+                return False
+            if self.authed(cfg):
+                return True
+            if path.startswith("/api/") or path == "/download":
+                self.send({"error": "login"}, code=401)
+            else:
+                self.redirect("/login")
+            return False
+
+        def do_login(self):
+            cfg = load_config()
+            ip = self.client_ip()
+            fails, until = LOGIN_FAILS.get(ip, [0, 0])
+            if until > time.time():
+                return self.send(login_page(error=f"Too many wrong passwords. Try again in {int((until - time.time()) / 60) + 1} min."),
+                                 "text/html; charset=utf-8")
+            n = int(self.headers.get("Content-Length", 0) or 0)
+            from urllib.parse import parse_qs
+            pw = (parse_qs(self.rfile.read(min(n, 4096)).decode("utf-8", "ignore")).get("password") or [""])[0]
+            stored = cfg["settings"].get("web_password_hash")
+            if stored and check_password(pw, stored):
+                LOGIN_FAILS.pop(ip, None)
+                return self.redirect("/", self.session_cookie(make_session(cfg), SESSION_DAYS * 86400))
+            time.sleep(1)
+            fails += 1
+            LOGIN_FAILS[ip] = [fails, time.time() + 600 if fails >= 5 else 0]
+            self.send(login_page(error="Wrong password." if stored else "", setup_needed=not stored),
+                      "text/html; charset=utf-8")
 
         def send(self, body, ctype="application/json", name=None, code=200):
             if isinstance(body, (dict, list)):
@@ -1553,12 +1767,23 @@ def run_web(port, host):
 
         def do_GET(self):
             path = self.path.split("?")[0]
+            if path == "/login":
+                if self.authed(load_config()):
+                    return self.redirect("/")
+                return self.send(login_page(setup_needed=not load_config()["settings"].get("web_password_hash")),
+                                 "text/html; charset=utf-8")
+            if path == "/logout":
+                return self.redirect("/login", self.session_cookie("", 0))
+            if not self.gate(path):
+                return
             files = {"/excel": (XLSX_FILE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
                      "/pdf": (PDF_FILE, "application/pdf"), "/csv": (EVENTS_CSV, "text/csv; charset=utf-8")}
             if path == "/api/state":
-                return self.send(api_state())
+                return self.send(dict(api_state(), remote=not self.is_local()))
             if path == "/api/settings":
-                return self.send(api_settings_get())
+                d = api_settings_get()
+                d.update(remote=not self.is_local(), lan_urls=[f"http://{ip}:{port}" for ip in lan_ips()])
+                return self.send(d)
             if path == "/api/olddata":
                 return self.send({"found": [{k: v for k, v in f.items() if k != "_ts"} for f in find_old_data()]})
             if path == "/api/report":
@@ -1589,6 +1814,13 @@ def run_web(port, host):
                 self.send(f.read(), "text/html; charset=utf-8")
 
         def do_POST(self):
+            path = self.path.split("?")[0]
+            if path == "/login":
+                return self.do_login()
+            if not self.gate(path):
+                return
+            if "application/json" not in (self.headers.get("Content-Type") or ""):
+                return self.send({"error": "Bad request"}, code=403)      # blocks other websites posting here
             n = int(self.headers.get("Content-Length", 0) or 0)
             try:
                 body = json.loads(self.rfile.read(n) or b"{}")
@@ -1655,6 +1887,32 @@ def run_web(port, host):
                     except ImportError:
                         return self.send({"error": "Desktop pop-ups need: pip install plyer"}, code=400)
                 return self.send({"ok": True, "sent": sent})
+            elif self.path == "/api/password":
+                pw = str(body.get("password") or "")
+                if len(pw) < 8:
+                    return self.send({"error": "Use at least 8 characters"}, code=400)
+                if not self.is_local() and not check_password(str(body.get("current") or ""),
+                                                              cfg["settings"].get("web_password_hash", "")):
+                    return self.send({"error": "Current password is wrong"}, code=400)
+                cfg["settings"]["web_password_hash"] = hash_password(pw)
+                save_config(cfg)
+                if not self.is_local():      # keep the person who changed it signed in
+                    body = json.dumps({"ok": True}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Set-Cookie", self.session_cookie(make_session(load_config()), SESSION_DAYS * 86400))
+                    self.end_headers()
+                    return self.wfile.write(body)
+            elif self.path == "/api/remote":
+                on = bool(body.get("allow"))
+                if on and not cfg["settings"].get("web_password_hash"):
+                    return self.send({"error": "Set a password first"}, code=400)
+                if cfg["settings"].get("allow_remote", False) != on:
+                    cfg["settings"]["allow_remote"] = on
+                    save_config(cfg)
+                    SERVER["rebind"] = True
+                    threading.Timer(0.5, lambda: SERVER["srv"] and SERVER["srv"].shutdown()).start()
+                return self.send({"ok": True, "lan_urls": [f"http://{ip}:{port}" for ip in lan_ips()] if on else []})
             elif self.path == "/api/stop":
                 self.send({"ok": True})
                 print("\n  Stopped because a newer copy of Restock Watch was started.\n")
@@ -1668,6 +1926,8 @@ def run_web(port, host):
                 return self.send(telegram_find_chat(token))
             self.send({"ok": True})
 
+    forced_host = host
+    host = forced_host or ("0.0.0.0" if load_config()["settings"].get("allow_remote") else "127.0.0.1")
     if not port_is_free(port, host):
         stop_old_copy(port)
     if not port_is_free(port, host):
@@ -1678,10 +1938,14 @@ def run_web(port, host):
               f"  !!   - Or, to use a different port, change  web_port: {port}  in config.yaml.\n")
         sys.exit(EXIT_PORT_BUSY)
     srv = ThreadingHTTPServer((host, port), Handler)
+    SERVER["srv"] = srv
     threading.Thread(target=run_forever, daemon=True).start()
     threading.Thread(target=watch_other_copies, args=(port,), daemon=True).start()
     link = f"http://localhost:{port}"
     print(f"\n  Restock Watch is running:  {link}\n  Keep this window open (minimise it). Ctrl+C to stop.\n")
+    if host == "0.0.0.0":
+        print("  Other devices / Cloudflare Tunnel (password needed): " +
+              ", ".join(f"http://{ip}:{port}" for ip in lan_ips()) + "\n")
     if os.environ.get("NO_BROWSER") != "1":
         try:
             import webbrowser
@@ -1698,7 +1962,17 @@ def run_web(port, host):
         except Exception:
             pass
     try:
-        srv.serve_forever()
+        while True:
+            srv.serve_forever()
+            srv.server_close()
+            if not SERVER["rebind"]:
+                break
+            SERVER["rebind"] = False          # "allow other devices" was switched: listen again on the new address
+            host = forced_host or ("0.0.0.0" if load_config()["settings"].get("allow_remote") else "127.0.0.1")
+            srv = ThreadingHTTPServer((host, port), Handler)
+            SERVER["srv"] = srv
+            print("  Now listening on " + ("your network too: " + ", ".join(f"http://{ip}:{port}" for ip in lan_ips())
+                                            if host == "0.0.0.0" else "this PC only") + "\n")
     except KeyboardInterrupt:
         print("  Stopped.")
         os._exit(0)
@@ -1734,7 +2008,7 @@ def main():
 
     if args.cmd == "web":
         s = cfg["settings"]
-        run_web(args.port or int(s.get("web_port", 8787)), args.host or s.get("web_host", "127.0.0.1"))
+        run_web(args.port or int(s.get("web_port", 8787)), args.host)
     elif args.cmd == "autostart":
         cfg["settings"]["start_with_windows"] = args.onoff == "on"
         save_config(cfg)
