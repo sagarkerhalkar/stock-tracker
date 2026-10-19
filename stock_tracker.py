@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 7
+APP_VERSION = 8
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -1365,7 +1365,9 @@ def api_settings_get():
         out[ch] = item
     s = cfg["settings"]
     return {"channels": out, "check_every_minutes": s.get("check_every_minutes", 5),
-            "fast_check_minutes": s.get("fast_check_minutes", 2), "daily_summary_time": s.get("daily_summary_time", "")}
+            "fast_check_minutes": s.get("fast_check_minutes", 2), "daily_summary_time": s.get("daily_summary_time", ""),
+            "start_with_windows": bool(s.get("start_with_windows", True)), "windows": os.name == "nt",
+            "port": int(s.get("web_port", 8787))}
 
 
 def api_settings_save(body):
@@ -1400,6 +1402,9 @@ def api_settings_save(body):
     for k in ("check_every_minutes", "fast_check_minutes"):
         if k in body:
             cfg["settings"][k] = max(1.0, float(body[k]))
+    if "start_with_windows" in body:
+        cfg["settings"]["start_with_windows"] = bool(body["start_with_windows"])
+        set_autostart(cfg["settings"]["start_with_windows"])
     if "daily_summary_time" in body:
         cfg["settings"]["daily_summary_time"] = body["daily_summary_time"] or None
     save_config(cfg)
@@ -1411,6 +1416,47 @@ SAMPLE_ALERT = {"product": "Test product - Restock Watch is connected", "site": 
 
 
 OTHER_COPIES = []
+EXIT_PORT_BUSY = 3          # 2_START.bat waits and tries again on this code
+
+
+def startup_folder():
+    return os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+
+
+def set_autostart(enabled):
+    """Windows: start Restock Watch (minimised, no browser pop-up) every time you sign in.
+    Uses a tiny launcher in the Startup folder that runs 2_START.bat from THIS folder."""
+    if os.name != "nt":
+        return False
+    folder = startup_folder()
+    vbs = os.path.join(folder, "Restock Watch.vbs")
+    old_lnk = os.path.join(folder, "Restock Watch.lnk")      # from an earlier version - avoid starting twice
+    try:
+        if os.path.exists(old_lnk):
+            os.remove(old_lnk)
+        if not enabled:
+            if os.path.exists(vbs):
+                os.remove(vbs)
+            return False
+        os.makedirs(folder, exist_ok=True)
+        bat = os.path.join(BASE, "2_START.bat")
+        text = ('Set sh = CreateObject("WScript.Shell")\r\n'
+                f'sh.CurrentDirectory = "{BASE}"\r\n'
+                f'sh.Run """{bat}"" silent", 7, False\r\n')
+        current = ""
+        if os.path.exists(vbs):
+            try:
+                with open(vbs, encoding="utf-16") as f:
+                    current = f.read()
+            except (UnicodeError, OSError):
+                pass
+        if current.replace("\r\n", "\n") != text.replace("\r\n", "\n"):
+            with open(vbs, "w", encoding="utf-16", newline="") as f:   # UTF-16 so any folder name works
+                f.write(text)
+        return True
+    except OSError as e:
+        print("  Could not set up start-with-Windows:", e)
+        return False
 
 
 def watch_other_copies(my_port):
@@ -1630,7 +1676,7 @@ def run_web(port, host):
               f"  !! Restock Watch always runs on http://localhost:{port}, so that program must be closed first.\n"
               f"  !!   - Close that program (or restart the PC), then double-click 2_START.bat again.\n"
               f"  !!   - Or, to use a different port, change  web_port: {port}  in config.yaml.\n")
-        sys.exit(1)
+        sys.exit(EXIT_PORT_BUSY)
     srv = ThreadingHTTPServer((host, port), Handler)
     threading.Thread(target=run_forever, daemon=True).start()
     threading.Thread(target=watch_other_copies, args=(port,), daemon=True).start()
@@ -1642,7 +1688,20 @@ def run_web(port, host):
             threading.Timer(1.2, lambda: webbrowser.open(link)).start()
         except Exception:
             pass
-    srv.serve_forever()
+    cfg = load_config()
+    if os.name == "nt":
+        on = set_autostart(cfg["settings"].get("start_with_windows", True))
+        print("  Starts automatically with Windows: " + ("ON" if on else "OFF") + "  (change it on the Alerts page)\n")
+    if os.environ.get("NO_BROWSER") == "1":
+        try:
+            send_desktop({}, "Restock Watch is running", f"Watching your products. Dashboard: {link}", {})
+        except Exception:
+            pass
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("  Stopped.")
+        os._exit(0)
 
 
 def main():
@@ -1651,6 +1710,8 @@ def main():
     w = sub.add_parser("web", help="web dashboard + tracking on http://localhost:8787")
     w.add_argument("--port", type=int, default=None, help="port number (default from config, else 8787)")
     w.add_argument("--host", default=None, help="127.0.0.1 = only this PC, 0.0.0.0 = phone on same Wi-Fi too")
+    au = sub.add_parser("autostart", help="start with Windows: on / off")
+    au.add_argument("onoff", choices=["on", "off"])
     rs = sub.add_parser("restore", help="find and bring back products + history from an older folder")
     rs.add_argument("folder", nargs="?", default=None)
     pp = sub.add_parser("ports", help="show busy/free ports")
@@ -1674,6 +1735,11 @@ def main():
     if args.cmd == "web":
         s = cfg["settings"]
         run_web(args.port or int(s.get("web_port", 8787)), args.host or s.get("web_host", "127.0.0.1"))
+    elif args.cmd == "autostart":
+        cfg["settings"]["start_with_windows"] = args.onoff == "on"
+        save_config(cfg)
+        ok = set_autostart(args.onoff == "on")
+        print("Start with Windows is now", "ON" if ok else "OFF")
     elif args.cmd == "restore":
         if args.folder:
             r = restore_old_data(args.folder)

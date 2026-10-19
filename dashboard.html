@@ -325,6 +325,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
       <label>Check available products every
         <select class="field" id="normMin"><option value="2">2 minutes</option><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option></select></label>
       <button class="btn primary" id="saveSpeed">Save speed</button>
+      <label class="chk" id="autoRow" style="margin-left:8px" hidden><input type="checkbox" id="autoStart"> Start automatically with Windows</label>
       <span class="result" id="speedRes"></span>
       <p class="small" style="flex-basis:100%;margin:0;color:var(--muted);font-size:12.5px">Faster checks mean faster alerts, but checking a site too often can get you temporarily blocked. 2 minutes for out-of-stock products is a good balance.</p>
     </div>
@@ -363,7 +364,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 7;
+const APP_VERSION = 8;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -696,6 +697,7 @@ const CH = [
 ];
 async function loadSettings(){
   const s = await (await fetch("/api/settings")).json();
+  $("#autoRow").hidden = !s.windows; $("#autoStart").checked = !!s.start_with_windows;
   [["#fastMin", s.fast_check_minutes], ["#normMin", s.check_every_minutes]].forEach(([sel, v]) => { const el = $(sel), val = String(+v);
     if (![...el.options].some(o => o.value === val)) el.add(new Option(`${val} minute${+v === 1 ? "" : "s"}`, val));
     el.value = val; });
@@ -734,6 +736,8 @@ $("#chans").addEventListener("click", async ev => {
 $("#chans").addEventListener("change", async ev => { const t = ev.target.closest(".toggle input"); if (!t) return;
   const sec = t.closest(".chan"); await post("/api/settings", chanValues(sec));
   const st = sec.querySelector(".st"); st.className = "st badge " + (t.checked ? "in" : ""); st.innerHTML = `<i></i>${t.checked ? "On" : "Off"}`; load(); });
+$("#autoStart").onchange = async e => { const r = await post("/api/settings", {start_with_windows: e.target.checked});
+  toast(r.ok ? (e.target.checked ? "Restock Watch will start with Windows" : "It won't start with Windows any more") : r.error); };
 $("#saveSpeed").onclick = async () => { const r = await post("/api/settings", {fast_check_minutes:+$("#fastMin").value, check_every_minutes:+$("#normMin").value});
   $("#speedRes").textContent = r.ok ? "Saved" : r.error; $("#speedRes").className = "result " + (r.ok ? "ok" : "err"); };
 

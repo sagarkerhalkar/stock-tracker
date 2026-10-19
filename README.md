@@ -15,7 +15,12 @@ Every change is saved with its exact date and time in **Excel, PDF and CSV**.
 1. Install **Python 3.10+** from python.org – tick **"Add Python to PATH"** during install.
 2. Double-click **`1_INSTALL.bat`** (once).
 3. Double-click **`2_START.bat`**. The dashboard opens at **http://localhost:8787** – always the same address, so bookmark it.
-4. Optional: double-click **`8_START_WITH_WINDOWS.bat`** so it starts by itself (minimised) whenever you sign in. Run it again to turn that off.
+
+**It starts by itself with Windows.** From now on Restock Watch starts automatically (minimised, with a small
+"Restock Watch is running" pop-up) every time you turn on / restart your PC and sign in – no need to click anything.
+If it ever stops unexpectedly it restarts itself within 10 seconds. If port 8787 is briefly busy at start-up it waits
+and tries again every minute. Turn this off on the **Alerts** page ("Start automatically with Windows") or with
+`8_START_WITH_WINDOWS.bat`.
 
 Then:
 - Paste product links at the top and press **Start watching**.

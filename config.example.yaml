@@ -11,7 +11,8 @@ settings:
   notify_on_first_check: true       # send a message the first time a product is checked
   alert_after_failures: 6           # warn you if a page can't be read this many times in a row
   daily_summary_time: "09:00"       # daily summary + Excel/PDF; remove this line to turn off
-  web_port: 8787                    # dashboard port; if busy, the next free port is used automatically
+  web_port: 8787                    # dashboard is always at http://localhost:8787
+  start_with_windows: true          # start automatically (minimised) every time you sign in to Windows
   web_host: 127.0.0.1               # 127.0.0.1 = only this PC | 0.0.0.0 = also your phone on same Wi-Fi
 
 # --------------------------------------------------------------------
