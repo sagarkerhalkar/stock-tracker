@@ -14,7 +14,8 @@ Every change is saved with its exact date and time in **Excel, PDF and CSV**.
 
 1. Install **Python 3.10+** from python.org – tick **"Add Python to PATH"** during install.
 2. Double-click **`1_INSTALL.bat`** (once).
-3. Double-click **`2_START.bat`** and press Enter. The dashboard opens in your browser.
+3. Double-click **`2_START.bat`**. The dashboard opens at **http://localhost:8787** – always the same address, so bookmark it.
+4. Optional: double-click **`8_START_WITH_WINDOWS.bat`** so it starts by itself (minimised) whenever you sign in. Run it again to turn that off.
 
 Then:
 - Paste product links at the top and press **Start watching**.
@@ -124,16 +125,21 @@ Where to find it:
 - **PDF** (`data/stock_report.pdf`): an at-a-glance table, then one section per product
 - `data/events.csv`: the raw change log
 
-Products you removed keep their history in the reports, marked "(removed)".
+**Removed products:** when you remove a product, its history is **hidden** from the dashboard, reports, Excel and PDF.
+It is not deleted – tick **Show removed products** on the Reports page to see it again, download it, or press **Watch again**.
+
+**Download one product (or a few):** on the Reports page each product has **Excel · PDF · CSV** buttons, or tick several
+products and use **Download** in the bar that appears. On the Products page: ••• → **Download history**.
 A daily summary is sent at 9:00 AM (change `daily_summary_time` in `config.yaml`).
 
-## Ports
+## Port 8787
 
-- `2_START.bat` asks for a port; Enter = 8787. **If it's busy, the next free port is used automatically** and opened in your browser.
-- Or: `python stock_tracker.py web --port 9123`. To keep a port, set `web_port:` in `config.yaml`.
+Restock Watch always runs on **http://localhost:8787**.
+- If an older Restock Watch is already using 8787, it is closed automatically and the new one takes over (its data stays on disk).
+- If a different program is using 8787, the black window tells you which one; close it (or restart the PC) and start again.
+  `5_CHECK_PORTS.bat` shows what is using 8787. To use another port permanently, change `web_port:` in `config.yaml`.
 - `4_RUN_WITHOUT_DASHBOARD.bat` tracks and alerts with no port at all.
-- See which ports are busy: **`5_CHECK_PORTS.bat`**, or `netstat -ano | findstr LISTENING` then `tasklist /FI "PID eq <number>"`.
-- Phone on the same Wi-Fi: set `web_host: 0.0.0.0` and open `http://<PC-IP>:<port>`.
+- Phone on the same Wi-Fi: set `web_host: 0.0.0.0` in `config.yaml` and open `http://<PC-IP>:8787` (anyone on that Wi-Fi can then open it).
 
 ## Commands
 

@@ -226,6 +226,20 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 .restore .opt code{display:block;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .restore .opt b{font-size:14px}
 
+
+/* ---------- select + download ---------- */
+.chk{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
+.chk input{width:16px;height:16px;accent-color:var(--brand)}
+.selbar{position:sticky;top:8px;z-index:6;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--ink);color:var(--surface);
+  padding:10px 12px;border-radius:12px;box-shadow:var(--lift);margin-bottom:12px;animation:drop .25s ease-out}
+.selbar span{font-weight:800;margin-right:auto}
+.hint-sel{font-size:12.5px;color:var(--faint);margin:-4px 0 12px}
+.item .pick{width:20px;height:20px;accent-color:var(--brand);flex:none;cursor:pointer}
+.item.removed{opacity:.75;border-style:dashed}
+.item.sel{outline:2px solid var(--brand);outline-offset:-1px}
+.item-dl{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.item-dl span{font-size:12.5px;color:var(--muted);margin-right:4px}
+
 /* ---------- toast ---------- */
 .toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(360px,calc(100vw - 36px))}
 .toast{background:var(--ink);color:var(--surface);padding:11px 14px;border-radius:12px;box-shadow:var(--lift);font-weight:600;animation:drop .3s ease-out}
@@ -321,16 +335,25 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
   <section class="page" id="page-reports">
     <div class="top"><h1>Reports</h1></div>
     <div class="dl">
-      <a href="/excel"><b>Excel report</b><span>Summary sheet + each product's own history</span></a>
-      <a href="/pdf"><b>PDF report</b><span>Same, one section per product, ready to print</span></a>
+      <a href="/excel"><b>Excel – all products</b><span>Summary sheet + each product's own history</span></a>
+      <a href="/pdf"><b>PDF – all products</b><span>Same, one section per product, ready to print</span></a>
       <a href="/csv"><b>CSV log</b><span>Raw change log for Google Sheets</span></a>
     </div>
     <p style="margin:-6px 0 18px;font-size:13px;color:var(--muted)">Missing older products or history? <button class="btn small" id="findOld">Find my old data</button></p>
     <div class="restore" id="restore2" hidden></div>
     <div class="bar">
       <h2>Each product's history</h2>
+      <label class="chk"><input type="checkbox" id="showRemoved"> Show removed products</label>
       <select class="field" id="repPick" aria-label="Show product" style="width:auto;max-width:340px"></select>
     </div>
+    <div class="selbar" id="selbar" hidden>
+      <span id="selCount"></span>
+      <a class="btn small primary" data-dl="xlsx" href="#">Download Excel</a>
+      <a class="btn small" data-dl="pdf" href="#">PDF</a>
+      <a class="btn small" data-dl="csv" href="#">CSV</a>
+      <button class="btn small" id="selClear">Clear</button>
+    </div>
+    <p class="hint-sel">Tick products to download only those, or use the buttons on each product.</p>
     <div id="repList"></div>
   </section>
 </main>
@@ -340,7 +363,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 6;
+const APP_VERSION = 7;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -437,6 +460,7 @@ function card(p, i, enter){
         <div class="menu-list" role="menu">
           <button data-act="target">Set price alert</button>
           <button data-act="rename">Rename</button>
+          <button data-act="download">Download history (Excel)</button>
           <button data-act="pause">${p.active ? "Pause watching" : "Resume watching"}</button>
           <button data-act="remove" class="danger">Remove</button>
         </div></div></div>
@@ -481,27 +505,39 @@ function renderFeed(){
     return `<li class="${c} ${old.size > 1 && !old.has(e.date+e.time+e.url) ? "new" : ""}"><span class="ic">${c === "in" ? "✓" : "✕"}</span><div><span class="what">${evLabel(e)}</span><span class="p" title="${esc(e.product)}">${esc(e.product)}</span><time>${nice(e.date+" "+e.time)} · ${esc(e.site)}${e.price ? " · "+esc(e.price) : ""}</time></div></li>`; }).join("")
     : `<li><div style="grid-column:1/-1;color:var(--muted)">Every change shows up here with its exact date and time.</div></li>`;
 }
-let repSig = "", repData = null, repOpen = {};
+let repSig = "", repData = null, repOpen = {}, picked = new Set();
+let showRemoved = false; try { showRemoved = localStorage.getItem("rw-removed") === "1"; } catch (e) {}
+const dlLink = (urls, fmt) => "/download?fmt=" + fmt + urls.map(u => "&url=" + encodeURIComponent(u)).join("");
+function updateSel(){
+  [...picked].forEach(u => { if (!repData.some(it => it.url === u)) picked.delete(u); });
+  const n = picked.size; $("#selbar").hidden = !n;
+  $("#selCount").textContent = n === 1 ? "1 product selected" : `${n} products selected`;
+  document.querySelectorAll("#selbar [data-dl]").forEach(a => a.href = dlLink([...picked], a.dataset.dl));
+  document.querySelectorAll(".item").forEach(el => { const on = picked.has(el.dataset.url); el.classList.toggle("sel", on); const c = el.querySelector(".pick"); if (c) c.checked = on; });
+}
 async function renderHistory(){
   if (!$("#page-reports").classList.contains("on")) return;
-  const sig = S.events.length + "|" + (S.events[0] ? S.events[0].date + S.events[0].time : "") + "|" + S.products.length;
+  const sig = S.events.length + "|" + (S.events[0] ? S.events[0].date + S.events[0].time : "") + "|" + S.products.map(p => p.url).join() + "|" + showRemoved;
   if (sig !== repSig || !repData){ repSig = sig;
-    try { repData = (await (await fetch("/api/report", {cache:"no-store"})).json()).items; } catch (e) { return; } }
+    try { repData = (await (await fetch("/api/report" + (showRemoved ? "?removed=1" : ""), {cache:"no-store"})).json()).items; } catch (e) { return; } }
   const pick = $("#repPick"), cur = pick.value;
   pick.innerHTML = `<option value="">All products (${repData.length})</option>` + repData.map((it, i) => `<option value="${i}">${esc(it.name.slice(0, 60))}</option>`).join("");
   pick.value = cur && +cur < repData.length ? cur : "";
   const list = pick.value === "" ? repData : [repData[+pick.value]];
   if (!list.length){ $("#repList").innerHTML = `<div class="empty"><b>No history yet</b>Add a product on the Products page – its history builds up here.</div>`; return; }
-  $("#repList").innerHTML = list.map(it => itemReport(it, repData.indexOf(it))).join("");
+  const html = list.map(it => itemReport(it, repData.indexOf(it))).join("");
+  if (html !== lastRepHtml){ lastRepHtml = html; $("#repList").innerHTML = html; }
+  updateSel();
 }
+let lastRepHtml = "";
 function itemReport(it, idx){
   const c = cls(it.status), word = st => st === "IN STOCK" ? "Available" : st === "OUT OF STOCK" ? "Out of stock" : "Not checked yet";
   const img = /^https?:\/\//.test(it.image) ? `<img src="${esc(it.image)}" alt="" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'ph',textContent:'${esc((it.site || "?")[0])}'}))">` : `<span class="ph">${esc((it.site || "?")[0])}</span>`;
   const ps = it.periods, oldest = [...ps].reverse(), total = oldest.reduce((a, p) => a + p.secs, 0) || 1;
   const show = repOpen[idx] ? ps : ps.slice(0, 8);
   const when = s => s ? new Date(parseT(s)).toLocaleString("en-IN", {day:"numeric", month:"short", year:"numeric", hour:"numeric", minute:"2-digit"}) : "";
-  return `<section class="item">
-    <div class="head"><div class="thumb">${img}</div><div style="min-width:0;flex:1">
+  return `<section class="item ${it.removed ? "removed" : ""}" data-url="${esc(it.url)}">
+    <div class="head"><input type="checkbox" class="pick" aria-label="Select ${esc(it.name)} for download"><div class="thumb">${img}</div><div style="min-width:0;flex:1">
       <h3>${esc(it.name)}${it.removed ? ` <span class="badge">Removed</span>` : ""}</h3>
       <div class="sub">${esc(it.site)}${it.price ? " · " + esc(it.price) : ""}</div></div>
       <span class="badge ${c}"><i></i>${word(it.status)}</span></div>
@@ -518,10 +554,22 @@ function itemReport(it, idx){
       ${show.map(p => `<tr class="${p.status === "IN STOCK" ? "in" : "out"}"><td>${word(p.status)}${p.ongoing ? " (now)" : ""}</td><td>${when(p.start)}</td><td>${p.ongoing ? "still now" : when(p.end || it.last_checked)}</td><td class="num">${esc(p.lasted)}</td><td class="num">${esc(p.price)}</td></tr>`).join("")}
       ${ps.length > 8 ? `<tr class="more"><td colspan="5"><button class="btn small" data-more="${idx}">${repOpen[idx] ? "Show less" : `Show all ${ps.length} periods`}</button></td></tr>` : ""}
     </tbody></table></div>` : `<p class="sub" style="margin:12px 0 0">No checks recorded yet.</p>`}
+    <div class="item-dl"><span>Download this product:</span>
+      <a class="btn small" href="${dlLink([it.url], "xlsx")}">Excel</a><a class="btn small" href="${dlLink([it.url], "pdf")}">PDF</a><a class="btn small" href="${dlLink([it.url], "csv")}">CSV</a>
+      ${it.removed ? `<button class="btn small primary" data-rewatch="${idx}" style="margin-left:auto">Watch again</button>` : ""}</div>
   </section>`;
 }
 $("#repPick").addEventListener("change", () => renderHistory());
-$("#repList").addEventListener("click", e => { const b = e.target.closest("[data-more]"); if (!b) return; repOpen[b.dataset.more] = !repOpen[b.dataset.more]; renderHistory(); });
+$("#repList").addEventListener("click", async e => {
+  const rw = e.target.closest("[data-rewatch]");
+  if (rw){ const it = repData[+rw.dataset.rewatch]; const r = await post("/api/add", {url: it.url, name: it.name});
+    toast(r.ok ? "Watching it again" : r.error); repSig = ""; setTimeout(load, 300); return; }
+  const b = e.target.closest("[data-more]"); if (!b) return; repOpen[b.dataset.more] = !repOpen[b.dataset.more]; renderHistory(); });
+$("#repList").addEventListener("change", e => { const c = e.target.closest(".pick"); if (!c) return;
+  const u = c.closest(".item").dataset.url; c.checked ? picked.add(u) : picked.delete(u); updateSel(); });
+$("#selClear").onclick = () => { picked.clear(); updateSel(); };
+$("#showRemoved").checked = showRemoved;
+$("#showRemoved").onchange = e => { showRemoved = e.target.checked; try { localStorage.setItem("rw-removed", showRemoved ? "1" : "0"); } catch (x) {} repSig = ""; renderHistory(); };
 function renderChannels(){
   const on = new Set(S.channels);
   $("#chanDots").innerHTML = ["desktop","telegram","whatsapp","google_chat","email"].map(k => `<span class="${on.has(k) ? "on" : ""}"><i></i>${CH_NAMES[k]}</span>`).join("");
@@ -609,7 +657,9 @@ $("#grid").addEventListener("click", async ev => {
   const a = ev.target.closest("[data-act]"); if (!a) return;
   const url = a.closest(".card").dataset.url, p = S.products.find(x => x.url === url);
   a.closest(".menu-list").classList.remove("open");
-  if (a.dataset.act === "remove"){ if (!confirm(`Stop watching "${p.name || url}"?`)) return; await post("/api/remove", {url}); toast("Removed"); }
+  if (a.dataset.act === "download"){ location.href = dlLink([url], "xlsx"); return; }
+  if (a.dataset.act === "remove"){ if (!confirm(`Stop watching "${p.name || url}"?\n\nIts history will be hidden from reports. You can still see it with "Show removed products" on the Reports page.`)) return;
+    await post("/api/remove", {url}); toast("Removed – its history is hidden"); repSig = ""; }
   if (a.dataset.act === "pause"){ await post("/api/update", {url, active: !p.active}); toast(p.active ? "Paused" : "Watching again"); }
   if (a.dataset.act === "rename"){ const n = prompt("Short name for this product", p.name); if (n === null) return; await post("/api/update", {url, name:n}); }
   if (a.dataset.act === "target"){ const t = prompt("Alert me when the price drops to or below (₹). Leave empty to turn off.", p.target || ""); if (t === null) return;

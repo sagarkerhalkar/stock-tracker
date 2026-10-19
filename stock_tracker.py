@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 6
+APP_VERSION = 7
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -583,8 +583,10 @@ def short_when(ts):
         return ts or ""
 
 
-def product_timelines(cfg, events=None, state=None):
-    """One entry per product, with its own in-stock / out-of-stock periods (newest first) and a summary."""
+def product_timelines(cfg, events=None, state=None, include_removed=False, only=None):
+    """One entry per product, with its own in-stock / out-of-stock periods (newest first) and a summary.
+    Products you removed are hidden unless include_removed=True (their history is kept on disk).
+    `only` = list of product links to include (works for removed products too)."""
     events = read_csv(EVENTS_CSV) if events is None else events
     state = load_state() if state is None else state
     current = now(cfg).replace(tzinfo=None)
@@ -592,13 +594,18 @@ def product_timelines(cfg, events=None, state=None):
     for e in events:
         by_url.setdefault(e.get("url") or e["product"], []).append(e)
     order = [p["url"] for p in cfg["products"]]
-    order += [u for u in by_url if u not in order and "B0CHX1W1XY" not in u]   # removed products keep history
+    removed_urls = [u for u in by_url if u not in order and "B0CHX1W1XY" not in u]
+    if only:
+        wanted = set(only)
+        order = [u for u in order + removed_urls if u in wanted]
+    elif include_removed:
+        order += removed_urls
     conf = {p["url"]: p for p in cfg["products"]}
     out = []
     for url in order:
         evs = sorted(by_url.get(url, []), key=lambda e: f"{e['date']} {e['time']}")
         p, s = conf.get(url, {}), state.get(url, {})
-        name = p.get("name") or s.get("title") or (evs[-1]["product"] if evs else url)
+        name = p.get("name") or s.get("name") or (evs[-1]["product"] if evs else "") or s.get("title") or url
         removed = url not in conf
         periods = []
         for e in evs:
@@ -645,6 +652,45 @@ def build_reports(cfg):
     return XLSX_FILE, PDF_FILE
 
 
+def _safe_filename(name):
+    name = re.sub(r'[\\/:*?"<>|\r\n]+', " ", str(name)).strip()
+    return (name[:60].strip() or "product")
+
+
+def export_products(cfg, urls, fmt):
+    """Report for just the chosen products. Returns (bytes, file name, content type)."""
+    items = product_timelines(cfg, only=urls)
+    if not items:
+        raise ValueError("Pick at least one product")
+    base = _safe_filename(items[0]["name"]) if len(items) == 1 else f"{len(items)} products"
+    stamp = now(cfg).strftime("%Y-%m-%d")
+    out_dir = os.path.join(DATA, "exports")
+    os.makedirs(out_dir, exist_ok=True)
+    if fmt == "csv":
+        import io
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["Product", "Site", "Status", "From", "To", "Lasted", "Price", "Link"])
+        for it in items:
+            for per in it["periods"]:
+                w.writerow([it["name"], it["site"], _status_word(per["status"], per["ongoing"]), fmt_when(per["start"]),
+                            "still now" if per["ongoing"] else fmt_when(per["end"] or it["last_checked"]),
+                            per["lasted"], per["price"], it["url"]])
+        return ("\ufeff" + buf.getvalue()).encode("utf-8"), f"{base} - stock history {stamp}.csv", "text/csv; charset=utf-8"
+    path = os.path.join(out_dir, f"export.{fmt}")
+    if fmt == "xlsx":
+        wanted = {it["url"] for it in items}
+        build_excel(cfg, items, [c for c in read_csv(CHECKS_CSV) if c.get("url") in wanted], path)
+        ctype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif fmt == "pdf":
+        build_pdf(cfg, items, path)
+        ctype = "application/pdf"
+    else:
+        raise ValueError("Unknown format")
+    with open(path, "rb") as f:
+        return f.read(), f"{base} - stock history {stamp}.{fmt}", ctype
+
+
 def _status_word(st, ongoing=False):
     if st == IN:
         return "Available" + (" (now)" if ongoing else "")
@@ -653,7 +699,7 @@ def _status_word(st, ongoing=False):
     return "Not checked yet"
 
 
-def build_excel(cfg, items, checks):
+def build_excel(cfg, items, checks, path=None):
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
@@ -748,10 +794,10 @@ def build_excel(cfg, items, checks):
     for i, w in enumerate([12, 10, 46, 14, 16, 12], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
-    wb.save(XLSX_FILE)
+    wb.save(path or XLSX_FILE)
 
 
-def build_pdf(cfg, items):
+def build_pdf(cfg, items, path=None):
     from reportlab.graphics.shapes import Drawing, Rect, String
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -766,7 +812,7 @@ def build_pdf(cfg, items):
     GREEN, RED, GREY = colors.HexColor("#D4EDDA"), colors.HexColor("#F8D7DA"), colors.HexColor("#EEEEEE")
     G2, R2 = colors.HexColor("#0F9D58"), colors.HexColor("#D93025")
     W = 186 * mm
-    doc = SimpleDocTemplate(PDF_FILE, pagesize=A4, leftMargin=12 * mm, rightMargin=12 * mm,
+    doc = SimpleDocTemplate(path or PDF_FILE, pagesize=A4, leftMargin=12 * mm, rightMargin=12 * mm,
                             topMargin=12 * mm, bottomMargin=12 * mm, title="Stock report - item wise")
     esc = lambda s: str(s or "").replace("₹", "Rs ").replace("&", "&amp;").replace("<", "&lt;")
     P = lambda s, style=small: Paragraph(esc(s), style)
@@ -1289,7 +1335,8 @@ def api_state():
     n = cfg["notifications"]
     channels = [k for k in CHANNELS if (n.get(k) or ({"enabled": True} if k == "desktop" else {})).get("enabled")]
     nxt = PROGRESS.get("next_check")
-    events = list(reversed(read_csv(EVENTS_CSV)[-80:]))
+    active = {p["url"] for p in cfg["products"]}
+    events = [e for e in reversed(read_csv(EVENTS_CSV)[-400:]) if e.get("url") in active][:80]
     today = now(cfg).strftime("%Y-%m-%d")
     return {"app": "restock-watch", "version": APP_VERSION, "folder": BASE, "other_copies": OTHER_COPIES,
             "products": products, "events": events,
@@ -1393,25 +1440,48 @@ def watch_other_copies(my_port):
 
 
 def stop_old_copy(port):
-    """If an older Restock Watch is already running on this port, ask it to close so the new one can take over."""
+    """If another Restock Watch (any version, any folder) is using our port, ask it to close so this one takes over.
+    Its products and history stay on disk - only the program is closed."""
     local = requests.Session()
     local.trust_env = False   # never route localhost through a proxy
     try:
-        r = local.get(f"http://127.0.0.1:{port}/api/state", timeout=3)
-        d = r.json()
-        if "products" not in d or d.get("version", 0) >= APP_VERSION and d.get("app") == "restock-watch":
-            return False      # not ours, or already the same version
+        d = local.get(f"http://127.0.0.1:{port}/api/state", timeout=3).json()
+    except Exception:
+        return False
+    if "products" not in d:
+        return False          # something else, not Restock Watch
+    try:
         local.post(f"http://127.0.0.1:{port}/api/stop", timeout=3)
-        for _ in range(10):
-            time.sleep(0.3)
-            if port_is_free(port):
-                print(f"Closed the older Restock Watch on port {port}.")
-                return True
-        print(f"\n  !! An OLDER Restock Watch is still running on port {port}.\n"
-              f"  !! Close its black window (or restart the PC), otherwise it keeps sending old-style alerts.\n")
     except Exception:
         pass
+    for _ in range(15):
+        time.sleep(0.3)
+        if port_is_free(port):
+            other = d.get("folder")
+            print(f"  Closed the Restock Watch that was already running on port {port}"
+                  + (f" (from {other})." if other and os.path.normcase(other) != os.path.normcase(BASE) else "."))
+            return True
+    print(f"\n  !! An older Restock Watch is running on port {port} and could not be closed automatically.\n"
+          f"  !! Close its black window (or restart the PC) and start again.\n")
     return False
+
+
+def who_uses_port(port):
+    """Name of the program listening on a port (Windows), so the message can say what to close."""
+    if os.name != "nt":
+        return ""
+    import subprocess
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=10).stdout
+        pid = next((ln.split()[-1] for ln in out.splitlines()
+                    if f":{port} " in ln and "LISTENING" in ln.upper()), None)
+        if not pid:
+            return ""
+        t = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                           capture_output=True, text=True, timeout=10).stdout.strip()
+        return f"{t.split(',')[0].strip(chr(34))} (PID {pid})" if t and "," in t else f"PID {pid}"
+    except Exception:
+        return ""
 
 
 def run_web(port, host):
@@ -1446,7 +1516,21 @@ def run_web(port, host):
             if path == "/api/olddata":
                 return self.send({"found": [{k: v for k, v in f.items() if k != "_ts"} for f in find_old_data()]})
             if path == "/api/report":
-                return self.send({"items": product_timelines(load_config())})
+                return self.send({"items": product_timelines(load_config(), include_removed="removed=1" in self.path)})
+            if path == "/download":
+                from urllib.parse import parse_qs, urlsplit
+                q = parse_qs(urlsplit(self.path).query)
+                try:
+                    data, name, ctype = export_products(load_config(), q.get("url", []), (q.get("fmt") or ["xlsx"])[0])
+                except ValueError as e:
+                    return self.send(str(e), "text/plain; charset=utf-8", code=400)
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Disposition", f"attachment; filename=\"{name.encode('ascii', 'ignore').decode()}\"; "
+                                 f"filename*=UTF-8''{quote(name)}")
+                self.end_headers()
+                return self.wfile.write(data)
             if path in files:
                 fpath, ctype = files[path]
                 if path != "/csv":
@@ -1500,8 +1584,13 @@ def run_web(port, host):
                                 p.pop("target_price", None)
                 save_config(cfg)
             elif self.path == "/api/remove":
+                gone = [p for p in cfg["products"] if p["url"] == body.get("url")]
                 cfg["products"] = [p for p in cfg["products"] if p["url"] != body.get("url")]
                 save_config(cfg)
+                if gone and gone[0].get("name"):          # remember your name for it, for the hidden history
+                    st_ = load_state()
+                    st_.setdefault(gone[0]["url"], {})["name"] = gone[0]["name"]
+                    save_state(st_)
             elif self.path == "/api/check":
                 if PROGRESS["running"]:
                     return self.send({"ok": True, "already": True})
@@ -1536,9 +1625,12 @@ def run_web(port, host):
     if not port_is_free(port, host):
         stop_old_copy(port)
     if not port_is_free(port, host):
-        new = find_free_port(port + 1)
-        print(f"Port {port} is busy -> using free port {new} instead")
-        port = new
+        owner = who_uses_port(port)
+        print(f"\n  !! Port {port} is being used by another program{': ' + owner if owner else ''}.\n"
+              f"  !! Restock Watch always runs on http://localhost:{port}, so that program must be closed first.\n"
+              f"  !!   - Close that program (or restart the PC), then double-click 2_START.bat again.\n"
+              f"  !!   - Or, to use a different port, change  web_port: {port}  in config.yaml.\n")
+        sys.exit(1)
     srv = ThreadingHTTPServer((host, port), Handler)
     threading.Thread(target=run_forever, daemon=True).start()
     threading.Thread(target=watch_other_copies, args=(port,), daemon=True).start()
@@ -1556,7 +1648,7 @@ def run_web(port, host):
 def main():
     ap = argparse.ArgumentParser(description="Online shopping stock tracker")
     sub = ap.add_subparsers(dest="cmd")
-    w = sub.add_parser("web", help="web dashboard + tracking (choose your port)")
+    w = sub.add_parser("web", help="web dashboard + tracking on http://localhost:8787")
     w.add_argument("--port", type=int, default=None, help="port number (default from config, else 8787)")
     w.add_argument("--host", default=None, help="127.0.0.1 = only this PC, 0.0.0.0 = phone on same Wi-Fi too")
     rs = sub.add_parser("restore", help="find and bring back products + history from an older folder")
