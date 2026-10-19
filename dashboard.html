@@ -280,6 +280,14 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 .day .periods{margin:0 0 6px}
 .day .periods td{padding:7px 14px}
 
+
+/* ---------- version / update / network address ---------- */
+.ver{margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.1);font-size:12.5px}
+.ver b{color:var(--nav-hi);display:inline;margin:0;font-size:inherit}
+.ver .btn{margin-top:8px;width:100%}
+.netline{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:0 0 14px;padding:8px 12px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.netline a{font-weight:700}
+
 /* ---------- toast ---------- */
 .toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(360px,calc(100vw - 36px))}
 .toast{background:var(--ink);color:var(--surface);padding:11px 14px;border-radius:12px;box-shadow:var(--lift);font-weight:600;animation:drop .3s ease-out}
@@ -309,7 +317,8 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
   <button data-page="overview" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Products</button>
   <button data-page="alerts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></svg>Alerts<span class="nav-badge" id="setupBadge" hidden>Set up</span></button>
   <button data-page="reports"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>Reports</button>
-  <div class="nav-foot"><b>Alerts go to</b><div class="chan-dots" id="chanDots"></div><a class="logout" id="logout" href="/logout" hidden>Log out</a></div>
+  <div class="nav-foot"><b>Alerts go to</b><div class="chan-dots" id="chanDots"></div><a class="logout" id="logout" href="/logout" hidden>Log out</a>
+    <div class="ver" id="ver"></div></div>
 </nav>
 
 <main>
@@ -321,6 +330,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
       <button class="btn" id="soundBtn" aria-pressed="false">Turn on browser alerts</button>
       <button class="btn primary" id="checkBtn">Check now</button>
     </div>
+    <div class="netline" id="netline" hidden></div>
     <div class="banners" id="banners" aria-live="assertive"></div>
     <div class="restore" id="restore" hidden></div>
     <div class="kpis">
@@ -370,21 +380,18 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
       <p class="small" style="flex-basis:100%;margin:0;color:var(--muted);font-size:12.5px">Faster checks mean faster alerts, but checking a site too often can get you temporarily blocked. 2 minutes for out-of-stock products is a good balance.</p>
     </div>
     <section class="panel remote" id="remotePanel" style="margin-bottom:20px">
-      <h2>Open from phone or the internet (Cloudflare Tunnel)</h2>
-      <p class="rsub">On this PC you never need a password. From any other device – your phone, another PC, or a Cloudflare Tunnel link – a password is required.</p>
+      <h2>Open on your network and through your domain</h2>
       <ol class="rsteps">
-        <li><b>Set a password</b> <span class="result" id="pwState"></span>
-          <div class="inline" style="margin-top:8px"><input class="field" id="pwNew" type="password" placeholder="New password (8+ characters)" autocomplete="new-password">
-          <input class="field" id="pwCur" type="password" placeholder="Current password" autocomplete="current-password" hidden>
-          <button class="btn primary small" id="pwSave">Save password</button></div><span class="result" id="pwRes"></span></li>
-        <li><b>Phone / other PC on the same Wi-Fi</b>
-          <label class="chk" style="display:flex;margin-top:8px"><input type="checkbox" id="lanOn"> Allow devices on my network</label>
+        <li><b>Your network – phone, laptop, other PCs</b>
+          <label class="chk" style="display:flex;margin-top:8px"><input type="checkbox" id="lanOn"> Allow devices on my network (no password needed)</label>
           <div class="urls" id="lanUrls"></div>
-          <p class="rnote">The first time, Windows may ask "Allow Python on private networks?" – click <b>Allow</b>.</p></li>
-        <li><b>From anywhere – Cloudflare Tunnel</b> (works with or without step 2)
-          <p class="rnote" style="margin-top:6px"><b>Quick test link, no account:</b> double-click <b>9_CLOUDFLARE_TUNNEL.bat</b> in your Restock Watch folder. It installs cloudflared if needed and shows a link like <code>https://xxxx.trycloudflare.com</code> (a new link each time).</p>
-          <p class="rnote"><b>Permanent address on your own domain:</b> Cloudflare dashboard → Zero Trust → Networks → Tunnels → <b>Create a tunnel</b> (Cloudflared) → choose Windows and run the install command it shows in an <b>Administrator</b> Command Prompt → add a public hostname (e.g. <code>stock.yourdomain.com</code>) with Service <b>HTTP</b> and URL <code>localhost:8787</code>.</p>
-        </li>
+          <p class="rnote">If a phone can't open it, double-click <b>10_ALLOW_ON_NETWORK.bat</b> once (Windows Firewall) and make sure your Wi-Fi is set to <b>Private</b> in Windows.</p></li>
+        <li><b>Your domain – Cloudflare Tunnel</b>
+          <p class="rnote" style="margin-top:6px">Point your tunnel's public hostname to <code>http://localhost:8787</code> (Service HTTP, URL <code>localhost:8787</code>). Visitors through the tunnel must sign in with this password, so nobody on the internet can change your products or alerts.</p>
+          <div class="inline" style="margin-top:8px"><input class="field" id="pwNew" type="password" placeholder="Password (8+ characters)" autocomplete="new-password">
+          <input class="field" id="pwCur" type="password" placeholder="Current password" autocomplete="current-password" hidden>
+          <button class="btn primary small" id="pwSave">Save password</button> <span class="result" id="pwState"></span></div><span class="result" id="pwRes"></span>
+          <label class="chk" style="display:flex;margin-top:10px"><input type="checkbox" id="lanPw"> Ask for the password on my network too</label></li>
       </ol>
     </section>
     <div class="chans" id="chans"></div>
@@ -422,7 +429,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 9;
+const APP_VERSION = 10;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -461,7 +468,8 @@ async function load(){
     const r = await fetch("/api/state", {cache:"no-store"});
     if (r.status === 401){ location.href = "/login"; return; }
     S = await r.json();
-    $("#logout").hidden = !S.remote;
+    $("#logout").hidden = !S.signed_in;
+    versionUI();
   } catch (e) { $("#liveText").textContent = "Restock Watch has stopped. Start it again with 2_START.bat"; $("#live").classList.remove("busy"); setTimeout(load, 3000); return; }
   if ((S.version || 0) < APP_VERSION){ outdated(); setTimeout(load, 5000); return; }
   $("#outdated")?.remove();
@@ -817,20 +825,23 @@ $("#chans").addEventListener("change", async ev => { const t = ev.target.closest
   const sec = t.closest(".chan"); await post("/api/settings", chanValues(sec));
   const st = sec.querySelector(".st"); st.className = "st badge " + (t.checked ? "in" : ""); st.innerHTML = `<i></i>${t.checked ? "On" : "Off"}`; load(); });
 function remoteUI(s){
-  $("#pwState").textContent = s.password_set ? "✓ password is set" : "not set yet";
+  $("#pwState").textContent = s.password_set ? "✓ password is set" : "no password yet";
   $("#pwState").className = "result " + (s.password_set ? "ok" : "err");
   $("#pwCur").hidden = !(s.remote && s.password_set);
-  $("#lanOn").checked = !!s.allow_remote; $("#lanOn").disabled = !s.password_set;
-  $("#lanUrls").innerHTML = s.allow_remote ? (s.lan_urls.length ? "Open on your phone: " + s.lan_urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join(" ") : "<span class='rnote'>No network found on this PC.</span>")
-    : (s.password_set ? "" : "<span class='rnote'>Set a password first.</span>");
+  $("#lanOn").checked = !!s.allow_remote;
+  $("#lanPw").checked = !!s.lan_password; $("#lanPw").disabled = !s.password_set;
+  $("#lanUrls").innerHTML = s.allow_remote ? (s.lan_urls.length ? "Open on other devices: " + s.lan_urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join(" ") : "<span class='rnote'>This PC isn't connected to a network right now.</span>") : "";
 }
 $("#pwSave").onclick = async () => { const r = await post("/api/password", {password: $("#pwNew").value, current: $("#pwCur").value});
   $("#pwRes").textContent = r.ok ? "Saved" : r.error; $("#pwRes").className = "result " + (r.ok ? "ok" : "err");
   if (r.ok){ $("#pwNew").value = $("#pwCur").value = ""; loadSettings(); } };
 $("#lanOn").onchange = async e => { const r = await post("/api/remote", {allow: e.target.checked});
-  if (!r.ok){ toast(r.error); e.target.checked = false; return; }
-  toast(e.target.checked ? "Other devices on your network can now open it (with the password)" : "Only this PC can open it now");
+  if (!r.ok){ toast(r.error); e.target.checked = !e.target.checked; return; }
+  toast(e.target.checked ? "Phones and PCs on your network can open it now" : "Only this PC can open it now (your tunnel still works)");
   setTimeout(loadSettings, 1500); };
+$("#lanPw").onchange = async e => { const r = await post("/api/lanpassword", {on: e.target.checked});
+  if (!r.ok){ toast(r.error); e.target.checked = false; return; }
+  toast(e.target.checked ? "Your network now needs the password too" : "No password needed on your network"); };
 $("#autoStart").onchange = async e => { const r = await post("/api/settings", {start_with_windows: e.target.checked});
   toast(r.ok ? (e.target.checked ? "Restock Watch will start with Windows" : "It won't start with Windows any more") : r.error); };
 $("#saveSpeed").onclick = async () => { const r = await post("/api/settings", {fast_check_minutes:+$("#fastMin").value, check_every_minutes:+$("#normMin").value});
@@ -838,7 +849,33 @@ $("#saveSpeed").onclick = async () => { const r = await post("/api/settings", {f
 
 
 /* ---------- bring back old data ---------- */
-let restoreAsked = false;
+let restoreAsked = false, updating = false;
+function versionUI(){
+  const v = S.version, latest = S.latest_version, st = S.update_status || "";
+  let html = `Version <b>${v}</b>`;
+  if (updating || /downloading|installing|restarting/.test(st)) html += `<br>Updating… the page reloads by itself.`;
+  else if (st.startsWith("failed")) html += `<br><span style="color:#F2655A">Update failed: ${esc(st.slice(8))}</span><button class="btn small" id="updBtn">Try again</button>`;
+  else if (latest && latest > v) html += `<br><b style="color:#34C77B">Version ${latest} is ready</b><button class="btn primary small" id="updBtn">Update now</button>`;
+  else if (latest) html += " · up to date";
+  if ($("#ver").innerHTML !== html){ $("#ver").innerHTML = html; const b = $("#updBtn"); if (b) b.onclick = updateApp; }
+  const nl = $("#netline");
+  nl.hidden = !(S.lan_urls && S.lan_urls.length) || S.remote;
+  if (!nl.hidden) nl.innerHTML = "Open on your phone or other PCs: " + S.lan_urls.map(u => `<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join(" ");
+}
+async function updateApp(){
+  updating = true; versionUI();
+  const r = await post("/api/update-app");
+  if (!r.ok){ updating = false; toast(r.error || "Couldn't start the update"); versionUI(); return; }
+  toast("Downloading the newest version – your products and history are kept");
+  const was = S.version, t0 = Date.now();
+  const poll = setInterval(async () => {
+    try { const d = await (await fetch("/api/state", {cache:"no-store"})).json();
+      if (d.version > was){ clearInterval(poll); location.reload(); }
+      if ((d.update_status || "").startsWith("failed")){ clearInterval(poll); updating = false; S = d; versionUI(); }
+    } catch (e) {}
+    if (Date.now() - t0 > 180000){ clearInterval(poll); location.reload(); }
+  }, 2000);
+}
 function otherCopies(){
   const list = S.other_copies || [], old = $("#others");
   if (!list.length){ old?.remove(); return; }

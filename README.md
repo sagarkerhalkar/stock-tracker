@@ -31,21 +31,14 @@ Keep the black window open (minimise it). Tracking stops when it's closed or the
 
 Mac/Linux: `pip install -r requirements.txt && python -m playwright install chromium`, then `python stock_tracker.py web`.
 
-## Updating to a new version (your data is kept)
+## Updating (your data is kept)
 
-Your products, alert settings and full history live in **`config.yaml`** and the **`data`** folder.
-Updates never touch them.
+From version 10 on: when a new version is on GitHub, the bottom of the left menu shows **"Version N is ready –
+Update now"**. One click downloads it, saves the old program files in `backup\`, and restarts Restock Watch.
+Your products, alert settings and history (`config.yaml`, `data`) are never touched. The current version number is
+always shown there too.
 
-**Easiest:** double-click **`6_UPDATE.bat`**. It
-1. copies `config.yaml` and `data` into `backup\<date>` first,
-2. downloads the latest version from GitHub (program files only),
-3. installs anything new.
-Then double-click `2_START.bat` – it closes the old version by itself.
-
-**Or by hand:** unzip the update zip *into the same folder* and choose "Replace". The update zip contains
-no `config.yaml` and no `data` folder, so nothing of yours can be overwritten.
-
-**If you cloned with git:** `git pull` (your `config.yaml` and `data` are never uploaded or replaced).
+Other ways: `python stock_tracker.py update`, or close the black window and double-click **`6_UPDATE.bat`**.
 
 ## Products or history missing? Bring back old data
 
@@ -147,26 +140,19 @@ Restock Watch always runs on **http://localhost:8787**.
 - If a different program is using 8787, the black window names it; Restock Watch waits and tries again every minute.
   `5_CHECK_PORTS.bat` shows what is using 8787. To use another port permanently, change `web_port:` in `config.yaml`.
 
-## Open from your phone or the internet (Cloudflare Tunnel)
+## Your network and your domain
 
-On the PC itself you never need a password. **From any other device – phone, another PC, or a Cloudflare link – a
-password is required**, so nobody else can change your products or alert settings.
+**Your network (on by default):** phones, laptops and other PCs on the same Wi-Fi / LAN can open Restock Watch at
+`http://<this PC's IP>:8787` – the exact address is shown at the top of the Products page and in the black window.
+No password is needed on your own network (you can turn on "Ask for the password on my network too").
+If a phone can't open it: double-click **`10_ALLOW_ON_NETWORK.bat`** once (adds a Windows Firewall rule for port 8787
+on private networks) and make sure your Wi-Fi is set to **Private** in Windows settings.
 
-1. **Alerts → Open from phone or the internet → Set a password** (8+ characters).
-2. **Phone / PC on the same Wi-Fi:** tick **Allow devices on my network**. The page shows the address to open,
-   e.g. `http://192.168.1.5:8787`. The first time, Windows may ask to allow Python on private networks – click Allow.
-3. **From anywhere with Cloudflare Tunnel** (works even without step 2, because the tunnel runs on this PC):
-   - *Quick test, no account:* double-click **`9_CLOUDFLARE_TUNNEL.bat`**. It installs `cloudflared`
-     (`winget install --id Cloudflare.cloudflared`) if needed and runs `cloudflared tunnel --url http://localhost:8787`.
-     Open the `https://….trycloudflare.com` link it prints (a new link every time; keep that window open).
-   - *Permanent address on your own domain:* Cloudflare dashboard → Zero Trust → Networks → Tunnels → **Create a tunnel**
-     (Cloudflared) → choose Windows and run the install command it shows in an **Administrator** Command Prompt
-     (this installs cloudflared as a Windows service, so it also starts with Windows) → add a public hostname,
-     e.g. `stock.yourdomain.com`, Service **HTTP**, URL **localhost:8787**.
-   - Optional extra lock: put Cloudflare Access (email one-time code) in front of that hostname.
-
-Sign-in lasts 30 days per device; **Log out** is at the bottom of the left menu. After 5 wrong passwords that
-device must wait 10 minutes. Changing the password signs every other device out.
+**Your domain through Cloudflare Tunnel:** point the tunnel's public hostname to **`http://localhost:8787`**
+(Service HTTP, URL `localhost:8787`). Set a password on **Alerts → Open on your network and through your domain** –
+anyone arriving through the tunnel must sign in, so nobody on the internet can change your products or alerts.
+Sign-in lasts 30 days per device; after 5 wrong passwords that device waits 10 minutes.
+`9_CLOUDFLARE_TUNNEL.bat` gives a temporary `trycloudflare.com` link if you just want a quick test.
 
 ## Commands
 

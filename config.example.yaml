@@ -13,7 +13,8 @@ settings:
   daily_summary_time: "09:00"       # daily summary + Excel/PDF; remove this line to turn off
   web_port: 8787                    # dashboard is always at http://localhost:8787
   start_with_windows: true          # start automatically (minimised) every time you sign in to Windows
-  allow_remote: false               # true = other devices on your network can open it (password required). Set it on the Alerts page.
+  allow_remote: true                # true = phones / PCs on your own network can open it at http://<this PC's IP>:8787
+  lan_password: false               # true = ask for the password on your network too (internet/Cloudflare always asks)
 
 # --------------------------------------------------------------------
 #  PRODUCTS  - paste the full product page link

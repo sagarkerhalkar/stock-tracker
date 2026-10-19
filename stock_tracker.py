@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 9
+APP_VERSION = 10
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -1383,6 +1383,9 @@ def api_state():
     events = [e for e in reversed(read_csv(EVENTS_CSV)[-400:]) if e.get("url") in active][:80]
     today = now(cfg).strftime("%Y-%m-%d")
     return {"app": "restock-watch", "version": APP_VERSION, "folder": BASE, "other_copies": OTHER_COPIES,
+            "latest_version": UPDATE["latest"], "update_status": UPDATE["status"],
+            "lan_urls": [f"http://{ip}:{int(cfg['settings'].get('web_port', 8787))}" for ip in lan_ips()]
+            if cfg["settings"].get("allow_remote", True) else [],
             "products": products, "events": events,
             "changes_today": sum(1 for e in events if e["date"] == today and not e["event"].startswith("FIRST")),
             "progress": {k: PROGRESS[k] for k in ("running", "done", "total", "current", "last_run")},
@@ -1411,7 +1414,8 @@ def api_settings_get():
     return {"channels": out, "check_every_minutes": s.get("check_every_minutes", 5),
             "fast_check_minutes": s.get("fast_check_minutes", 2), "daily_summary_time": s.get("daily_summary_time", ""),
             "start_with_windows": bool(s.get("start_with_windows", True)), "windows": os.name == "nt",
-            "password_set": bool(s.get("web_password_hash")), "allow_remote": bool(s.get("allow_remote", False)),
+            "password_set": bool(s.get("web_password_hash")), "allow_remote": bool(s.get("allow_remote", True)),
+            "lan_password": bool(s.get("lan_password", False)),
             "port": int(s.get("web_port", 8787))}
 
 
@@ -1461,6 +1465,135 @@ SAMPLE_ALERT = {"product": "Test product - Restock Watch is connected", "site": 
 
 
 OTHER_COPIES = []
+GITHUB_REPO = "sagarkerhalkar/stock-tracker"
+UPDATE = {"latest": None, "checked": 0, "status": ""}
+EXIT_RESTART = 5            # 2_START.bat starts the app again straight away on this code
+KEEP = {"config.yaml", "data", "backup"}       # never touched by an update
+
+
+def _zip_url():
+    return os.environ.get("RW_UPDATE_ZIP") or f"https://github.com/{GITHUB_REPO}/archive/refs/heads/main.zip"
+
+
+def check_for_update():
+    """Read APP_VERSION from the newest stock_tracker.py on GitHub (falls back to the download zip)."""
+    try:
+        if not os.environ.get("RW_UPDATE_ZIP"):
+            r = requests.get(f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/stock_tracker.py", timeout=20)
+            m = re.search(r"^APP_VERSION = (\d+)", r.text, re.M) if r.ok else None
+            if m:
+                UPDATE.update(latest=int(m.group(1)), checked=time.time())
+                return UPDATE["latest"]
+    except Exception:
+        pass
+    try:
+        import io
+        import zipfile
+        z = zipfile.ZipFile(io.BytesIO(requests.get(_zip_url(), timeout=60).content))
+        name = next(n for n in z.namelist() if n.endswith("/stock_tracker.py") and n.count("/") == 1)
+        m = re.search(r"^APP_VERSION = (\d+)", z.read(name).decode("utf-8", "ignore"), re.M)
+        if m:
+            UPDATE.update(latest=int(m.group(1)), checked=time.time())
+    except Exception:
+        pass
+    return UPDATE["latest"]
+
+
+def update_checker():
+    time.sleep(20)
+    while True:
+        check_for_update()
+        time.sleep(6 * 3600)
+
+
+def install_update():
+    """Download the newest version from GitHub, back up the current program files, replace them, restart.
+    Your products, alert settings and history (config.yaml, data, backup) are never touched."""
+    import io
+    import shutil
+    import zipfile
+    UPDATE["status"] = "downloading"
+    r = requests.get(_zip_url(), timeout=90)
+    r.raise_for_status()
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    root = z.namelist()[0].split("/")[0] + "/"
+    files = [n for n in z.namelist() if n.startswith(root) and not n.endswith("/")]
+    rel = {n: n[len(root):] for n in files}
+    if "stock_tracker.py" not in rel.values():
+        raise RuntimeError("The download did not look like Restock Watch")
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    bk = os.path.join(BASE, "backup", f"{stamp}_program_before_update")
+    os.makedirs(bk, exist_ok=True)
+    for name in os.listdir(BASE):
+        src = os.path.join(BASE, name)
+        if name not in KEEP and os.path.isfile(src):
+            shutil.copy2(src, bk)
+    for n, r_ in rel.items():
+        top = r_.split("/")[0]
+        if top in KEEP:
+            continue
+        dst = os.path.join(BASE, *r_.split("/"))
+        new = z.read(n)
+        try:
+            with open(dst, "rb") as f:
+                if f.read() == new:
+                    continue                      # unchanged - leave it alone
+        except OSError:
+            pass
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "wb") as f:
+            f.write(new)
+    UPDATE["status"] = "installing"
+    try:
+        import subprocess
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", os.path.join(BASE, "requirements.txt")],
+                       timeout=600, capture_output=True)
+    except Exception:
+        pass
+    UPDATE["status"] = "restarting"
+    return bk
+
+
+def launcher(silent=False):
+    """Keeps Restock Watch running: starts it, and starts it again if it stops unexpectedly,
+    after an update, or when port 8787 was busy. (2_START.bat runs this.)"""
+    import subprocess
+    env = dict(os.environ, RW_LAUNCHER="1")
+    if silent:
+        env["NO_BROWSER"] = "1"
+    while True:
+        try:
+            code = subprocess.call([sys.executable, os.path.join(BASE, "stock_tracker.py"), "web"], cwd=BASE, env=env)
+        except KeyboardInterrupt:
+            print("  Stopped.")
+            return 0
+        if code == 0:
+            print("\n  Restock Watch has stopped.")
+            return 0
+        try:
+            if code == EXIT_RESTART:
+                print("\n  Updated - starting the new version now...\n")
+                env["NO_BROWSER"] = "1"
+                continue
+            if code == EXIT_PORT_BUSY:
+                print("  Waiting 60 seconds for port 8787 to become free, then trying again (close this window to stop).")
+                time.sleep(60)
+                continue
+            print(f"\n  Restock Watch stopped unexpectedly (code {code}). Restarting in 10 seconds (close this window to stop).")
+            time.sleep(10)
+        except KeyboardInterrupt:
+            print("  Stopped.")
+            return 0
+
+
+def restart_app():
+    """Start the new version. Under 2_START.bat the batch loop restarts us; otherwise start a fresh process."""
+    if os.environ.get("RW_LAUNCHER") == "1":
+        os._exit(EXIT_RESTART)
+    import subprocess
+    subprocess.Popen([sys.executable, os.path.join(BASE, "stock_tracker.py"), "web"], cwd=BASE,
+                     env=dict(os.environ, NO_BROWSER="1"))
+    os._exit(0)
 EXIT_PORT_BUSY = 3          # 2_START.bat waits and tries again on this code
 
 
@@ -1704,8 +1837,27 @@ def run_web(port, host=None):
                     return v
             return ""
 
+        def via_internet(self):
+            """Came through Cloudflare Tunnel / a proxy (i.e. from the internet)."""
+            return any(self.headers.get(h) for h in ("Cf-Connecting-Ip", "Cf-Ray", "X-Forwarded-For", "Forwarded"))
+
+        def is_lan(self):
+            """Another device on your home/office network (phone, laptop) - not through the internet."""
+            import ipaddress
+            if self.via_internet():
+                return False
+            try:
+                ip = ipaddress.ip_address(self.client_address[0].replace("::ffff:", ""))
+                return ip.is_private or ip.is_loopback or ip.is_link_local
+            except ValueError:
+                return False
+
         def authed(self, cfg):
-            return self.is_local() or valid_session(cfg, self.cookie("rw_session"))
+            if self.is_local():
+                return True
+            if self.is_lan() and not cfg["settings"].get("lan_password", False):
+                return True
+            return valid_session(cfg, self.cookie("rw_session"))
 
         def redirect(self, where, cookie=None):
             self.send_response(303)
@@ -1779,7 +1931,8 @@ def run_web(port, host=None):
             files = {"/excel": (XLSX_FILE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
                      "/pdf": (PDF_FILE, "application/pdf"), "/csv": (EVENTS_CSV, "text/csv; charset=utf-8")}
             if path == "/api/state":
-                return self.send(dict(api_state(), remote=not self.is_local()))
+                return self.send(dict(api_state(), remote=not self.is_local(),
+                                      signed_in=valid_session(load_config(), self.cookie("rw_session"))))
             if path == "/api/settings":
                 d = api_settings_get()
                 d.update(remote=not self.is_local(), lan_urls=[f"http://{ip}:{port}" for ip in lan_ips()])
@@ -1903,16 +2056,35 @@ def run_web(port, host=None):
                     self.send_header("Set-Cookie", self.session_cookie(make_session(load_config()), SESSION_DAYS * 86400))
                     self.end_headers()
                     return self.wfile.write(body)
-            elif self.path == "/api/remote":
-                on = bool(body.get("allow"))
+            elif self.path == "/api/lanpassword":
+                on = bool(body.get("on"))
                 if on and not cfg["settings"].get("web_password_hash"):
                     return self.send({"error": "Set a password first"}, code=400)
-                if cfg["settings"].get("allow_remote", False) != on:
+                cfg["settings"]["lan_password"] = on
+                save_config(cfg)
+            elif self.path == "/api/remote":
+                on = bool(body.get("allow"))
+                if cfg["settings"].get("allow_remote", True) != on:
                     cfg["settings"]["allow_remote"] = on
                     save_config(cfg)
                     SERVER["rebind"] = True
                     threading.Timer(0.5, lambda: SERVER["srv"] and SERVER["srv"].shutdown()).start()
                 return self.send({"ok": True, "lan_urls": [f"http://{ip}:{port}" for ip in lan_ips()] if on else []})
+            elif self.path == "/api/update-app":
+                if UPDATE["status"] in ("downloading", "installing", "restarting"):
+                    return self.send({"ok": True, "already": True})
+
+                def go():
+                    try:
+                        install_update()
+                        time.sleep(1.5)
+                        restart_app()
+                    except Exception as e:
+                        UPDATE["status"] = f"failed: {e}"
+                threading.Thread(target=go, daemon=True).start()
+                return self.send({"ok": True})
+            elif self.path == "/api/check-update":
+                return self.send({"latest": check_for_update(), "version": APP_VERSION})
             elif self.path == "/api/stop":
                 self.send({"ok": True})
                 print("\n  Stopped because a newer copy of Restock Watch was started.\n")
@@ -1927,7 +2099,7 @@ def run_web(port, host=None):
             self.send({"ok": True})
 
     forced_host = host
-    host = forced_host or ("0.0.0.0" if load_config()["settings"].get("allow_remote") else "127.0.0.1")
+    host = forced_host or ("0.0.0.0" if load_config()["settings"].get("allow_remote", True) else "127.0.0.1")
     if not port_is_free(port, host):
         stop_old_copy(port)
     if not port_is_free(port, host):
@@ -1941,11 +2113,12 @@ def run_web(port, host=None):
     SERVER["srv"] = srv
     threading.Thread(target=run_forever, daemon=True).start()
     threading.Thread(target=watch_other_copies, args=(port,), daemon=True).start()
+    threading.Thread(target=update_checker, daemon=True).start()
     link = f"http://localhost:{port}"
-    print(f"\n  Restock Watch is running:  {link}\n  Keep this window open (minimise it). Ctrl+C to stop.\n")
+    print(f"\n  Restock Watch (version {APP_VERSION}) is running:  {link}\n  Keep this window open (minimise it). Ctrl+C to stop.\n")
     if host == "0.0.0.0":
-        print("  Other devices / Cloudflare Tunnel (password needed): " +
-              ", ".join(f"http://{ip}:{port}" for ip in lan_ips()) + "\n")
+        print("  On your network (phone, other PCs):  " + "   ".join(f"http://{ip}:{port}" for ip in lan_ips()) + "\n"
+              "  Through your Cloudflare Tunnel: point it to http://localhost:" + str(port) + "  (password sign-in)\n")
     if os.environ.get("NO_BROWSER") != "1":
         try:
             import webbrowser
@@ -1968,7 +2141,7 @@ def run_web(port, host=None):
             if not SERVER["rebind"]:
                 break
             SERVER["rebind"] = False          # "allow other devices" was switched: listen again on the new address
-            host = forced_host or ("0.0.0.0" if load_config()["settings"].get("allow_remote") else "127.0.0.1")
+            host = forced_host or ("0.0.0.0" if load_config()["settings"].get("allow_remote", True) else "127.0.0.1")
             srv = ThreadingHTTPServer((host, port), Handler)
             SERVER["srv"] = srv
             print("  Now listening on " + ("your network too: " + ", ".join(f"http://{ip}:{port}" for ip in lan_ips())
@@ -1984,6 +2157,9 @@ def main():
     w = sub.add_parser("web", help="web dashboard + tracking on http://localhost:8787")
     w.add_argument("--port", type=int, default=None, help="port number (default from config, else 8787)")
     w.add_argument("--host", default=None, help="127.0.0.1 = only this PC, 0.0.0.0 = phone on same Wi-Fi too")
+    sub.add_parser("update", help="download and install the newest version from GitHub (keeps your data)")
+    la = sub.add_parser("launcher", help="run and keep running (used by 2_START.bat)")
+    la.add_argument("mode", nargs="?", default="")
     au = sub.add_parser("autostart", help="start with Windows: on / off")
     au.add_argument("onoff", choices=["on", "off"])
     rs = sub.add_parser("restore", help="find and bring back products + history from an older folder")
@@ -2009,6 +2185,13 @@ def main():
     if args.cmd == "web":
         s = cfg["settings"]
         run_web(args.port or int(s.get("web_port", 8787)), args.host)
+    elif args.cmd == "launcher":
+        sys.exit(launcher(silent=args.mode.lower() == "silent"))
+    elif args.cmd == "update":
+        latest = check_for_update()
+        print(f"This copy: version {APP_VERSION}.  On GitHub: version {latest or 'unknown'}.")
+        bk = install_update()
+        print(f"Updated. Old program files saved in {bk}. Your products and history were not touched.")
     elif args.cmd == "autostart":
         cfg["settings"]["start_with_windows"] = args.onoff == "on"
         save_config(cfg)
