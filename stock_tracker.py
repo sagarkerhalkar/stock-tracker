@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 3
+APP_VERSION = 4
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -551,24 +551,7 @@ def send_email(c, subject, msg, alert, attach=None):
 
 
 # --------------------------------------------------------------------------- reports
-def availability_periods(events, cfg):
-    """Turn events into rows: product | became available | went out of stock | how long it stayed."""
-    periods, open_ = [], {}
-    fmt = "%Y-%m-%d %H:%M:%S"
-    for e in events:
-        key = e["product"]
-        ts = f"{e['date']} {e['time']}"
-        if e["new_status"] == IN and key not in open_:
-            open_[key] = (ts, e.get("price", ""), e["site"])
-        elif e["new_status"] == OUT and key in open_:
-            start, price, site = open_.pop(key)
-            dur = datetime.strptime(ts, fmt) - datetime.strptime(start, fmt)
-            periods.append([key, site, start, ts, fmt_dur(dur.total_seconds()), price])
-    current = now(cfg).replace(tzinfo=None)
-    for key, (start, price, site) in open_.items():
-        dur = current - datetime.strptime(start, fmt)
-        periods.append([key, site, start, "still in stock", fmt_dur(dur.total_seconds()), price])
-    return periods
+TS_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def fmt_dur(sec):
@@ -583,113 +566,276 @@ def fmt_dur(sec):
     return f"{m} min" if m else "less than a minute"
 
 
+def fmt_when(ts):
+    try:
+        return datetime.strptime(ts, TS_FMT).strftime("%d %b %Y, %I:%M %p")
+    except (TypeError, ValueError):
+        return ts or ""
+
+
+def short_when(ts):
+    try:
+        return datetime.strptime(ts, TS_FMT).strftime("%d %b, %I:%M %p")
+    except (TypeError, ValueError):
+        return ts or ""
+
+
+def product_timelines(cfg, events=None, state=None):
+    """One entry per product, with its own in-stock / out-of-stock periods (newest first) and a summary."""
+    events = read_csv(EVENTS_CSV) if events is None else events
+    state = load_state() if state is None else state
+    current = now(cfg).replace(tzinfo=None)
+    by_url = {}
+    for e in events:
+        by_url.setdefault(e.get("url") or e["product"], []).append(e)
+    order = [p["url"] for p in cfg["products"]]
+    order += [u for u in by_url if u not in order]          # products removed later still keep their history
+    conf = {p["url"]: p for p in cfg["products"]}
+    out = []
+    for url in order:
+        evs = sorted(by_url.get(url, []), key=lambda e: f"{e['date']} {e['time']}")
+        p, s = conf.get(url, {}), state.get(url, {})
+        name = p.get("name") or s.get("title") or (evs[-1]["product"] if evs else url)
+        removed = url not in conf
+        periods = []
+        for e in evs:
+            ts = f"{e['date']} {e['time']}"
+            if e["new_status"] not in (IN, OUT):
+                continue
+            if periods and periods[-1]["status"] == e["new_status"]:
+                continue
+            if periods:
+                periods[-1]["end"] = ts
+            periods.append({"status": e["new_status"], "start": ts, "end": None, "price": e.get("price", "")})
+        end_now = (s.get("last_checked") if removed else None) or current.strftime(TS_FMT)
+        secs = {IN: 0, OUT: 0}
+        for per in periods:
+            a = datetime.strptime(per["start"], TS_FMT)
+            b = datetime.strptime(per["end"] or end_now, TS_FMT)
+            per["secs"] = max(0, (b - a).total_seconds())
+            per["lasted"] = fmt_dur(per["secs"])
+            per["ongoing"] = per["end"] is None and not removed
+            secs[per["status"]] += per["secs"]
+        tracked = secs[IN] + secs[OUT]
+        out.append({
+            "name": name, "url": url, "site": site_name(url) if url.startswith("http") else "",
+            "image": s.get("image", ""), "removed": removed, "price": s.get("price", ""),
+            "status": s.get("status") or (periods[-1]["status"] if periods else "NOT CHECKED"),
+            "since": s.get("since") or (periods[-1]["start"] if periods else ""),
+            "last_checked": s.get("last_checked", ""),
+            "came_back": sum(1 for e in evs if e["event"] == "BACK IN STOCK"),
+            "went_out": sum(1 for e in evs if e["event"] == "WENT OUT OF STOCK"),
+            "time_in": fmt_dur(secs[IN]), "time_out": fmt_dur(secs[OUT]),
+            "pct_in": round(100 * secs[IN] / tracked) if tracked else None,
+            "tracking_since": periods[0]["start"] if periods else "",
+            "periods": list(reversed(periods)),             # newest first
+        })
+    return out
+
+
 def build_reports(cfg):
     events = read_csv(EVENTS_CSV)
     checks = read_csv(CHECKS_CSV)
-    state = load_state()
-    periods = availability_periods(events, cfg)
-    build_excel(cfg, events, checks, state, periods)
-    build_pdf(cfg, events, state, periods)
+    items = product_timelines(cfg, events, load_state())
+    build_excel(cfg, items, checks)
+    build_pdf(cfg, items)
     return XLSX_FILE, PDF_FILE
 
 
-def build_excel(cfg, events, checks, state, periods):
+def _status_word(st, ongoing=False):
+    if st == IN:
+        return "Available" + (" (now)" if ongoing else "")
+    if st == OUT:
+        return "Out of stock" + (" (now)" if ongoing else "")
+    return "Not checked yet"
+
+
+def build_excel(cfg, items, checks):
     from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
 
     wb = Workbook()
-    head_fill = PatternFill("solid", fgColor="1F3A5F")
-    green = PatternFill("solid", fgColor="D4EDDA")
-    red = PatternFill("solid", fgColor="F8D7DA")
-    grey = PatternFill("solid", fgColor="EEEEEE")
+    navy, white = "1F3A5F", "FFFFFF"
+    fill = lambda c: PatternFill("solid", fgColor=c)
+    GREEN, RED, GREY, BAND = fill("D4EDDA"), fill("F8D7DA"), fill("EEEEEE"), fill("E8EEF7")
+    thin = Side(style="thin", color="D0D5DD")
+    box = Border(top=thin, bottom=thin, left=thin, right=thin)
+    status_fill = lambda st: GREEN if st == IN else RED if st == OUT else GREY
 
-    def sheet(ws, headers, rows, status_col=None, widths=None):
-        ws.append(headers)
-        for c in ws[1]:
-            c.font, c.fill = Font(bold=True, color="FFFFFF"), head_fill
+    def header(ws, row, titles):
+        for i, t in enumerate(titles, 1):
+            c = ws.cell(row, i, t)
+            c.font, c.fill, c.border = Font(bold=True, color=white), fill(navy), box
             c.alignment = Alignment(vertical="center")
-        for row in rows:
-            ws.append(row)
-            if status_col is not None:
-                v = str(row[status_col])
-                fill = green if (IN in v or "BACK" in v) else red if (OUT in v or "OUT" in v) else grey
-                ws.cell(ws.max_row, status_col + 1).fill = fill
-        ws.freeze_panes = "A2"
-        ws.auto_filter.ref = ws.dimensions
-        for i, h in enumerate(headers, 1):
-            w = (widths or {}).get(h) or min(max([len(str(h))] + [len(str(r[i - 1])) for r in rows[:500]]) + 2, 60)
-            ws.column_dimensions[get_column_letter(i)].width = w
 
+    # ---- Sheet 1: one line per product
     ws = wb.active
-    ws.title = "Current Status"
-    rows = []
-    for p in cfg["products"]:
-        s = state.get(p["url"], {})
-        rows.append([p.get("name") or s.get("title", ""), site_name(p["url"]), s.get("status", "not checked"),
-                     s.get("since", ""), s.get("price", ""), s.get("last_checked", ""), p["url"]])
-    sheet(ws, ["Product", "Site", "Status", "Since", "Price", "Last checked", "URL"], rows, status_col=2,
-          widths={"URL": 60, "Product": 40})
+    ws.title = "Summary"
+    cols = ["Product", "Site", "Status now", "Since", "Price", "Came back in stock", "Went out of stock",
+            "Total time available", "Total time out of stock", "Available % of time", "Tracking since", "Link"]
+    header(ws, 1, cols)
+    for r, it in enumerate(items, 2):
+        vals = [it["name"] + ("  (removed)" if it["removed"] else ""), it["site"], _status_word(it["status"]),
+                fmt_when(it["since"]), it["price"], f"{it['came_back']} times", f"{it['went_out']} times",
+                it["time_in"] if it["periods"] else "", it["time_out"] if it["periods"] else "",
+                f"{it['pct_in']}%" if it["pct_in"] is not None else "", fmt_when(it["tracking_since"]), it["url"]]
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(r, c, v)
+            cell.border = box
+            cell.alignment = Alignment(vertical="top", wrap_text=(c == 1))
+        ws.cell(r, 3).fill = status_fill(it["status"])
+        ws.cell(r, 3).font = Font(bold=True)
+        if it["url"].startswith("http"):
+            ws.cell(r, 12).hyperlink = it["url"]
+            ws.cell(r, 12).value = "Open"
+            ws.cell(r, 12).font = Font(color="1D6FE0", underline="single")
+    for i, w in enumerate([46, 14, 16, 22, 12, 12, 12, 14, 14, 12, 22, 8], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "B2"
 
-    sheet(wb.create_sheet("Stock Events"), [f.replace("_", " ").title() for f in EVENT_FIELDS],
-          [[e.get(f, "") for f in EVENT_FIELDS] for e in reversed(events)], status_col=4,
-          widths={"Url": 50, "Product": 40})
-    sheet(wb.create_sheet("Availability Periods"),
-          ["Product", "Site", "Came in stock", "Went out of stock", "Stayed available", "Price"], periods,
-          widths={"Product": 40})
-    sheet(wb.create_sheet("All Checks"), [f.replace("_", " ").title() for f in CHECK_FIELDS],
-          [[c.get(f, "") for f in CHECK_FIELDS] for c in reversed(checks[-5000:])], status_col=4,
-          widths={"Url": 50, "Product": 40, "Detail": 40})
+    # ---- Sheet 2: item-wise history, one block per product
+    ws = wb.create_sheet("Item-wise history")
+    widths = [18, 24, 24, 16, 14]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    r = 1
+    ws.cell(r, 1, "Each product's stock history - latest first").font = Font(bold=True, size=14)
+    r += 2
+    for it in items:
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
+        c = ws.cell(r, 1, it["name"] + ("  (removed)" if it["removed"] else ""))
+        c.font, c.fill = Font(bold=True, size=12, color=navy), BAND
+        c.alignment = Alignment(wrap_text=True, vertical="center")
+        ws.row_dimensions[r].height = 32
+        r += 1
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=5)
+        summary = f"{it['site']}  |  Now: {_status_word(it['status'])}"
+        if it["since"]:
+            summary += f" since {fmt_when(it['since'])}"
+        if it["periods"]:
+            summary += (f"  |  Came back {it['came_back']}x, went out {it['went_out']}x"
+                        f"  |  Available {it['pct_in']}% of the time")
+        ws.cell(r, 1, summary).font = Font(italic=True, color="5B6475")
+        r += 1
+        header(ws, r, ["Status", "From", "To", "Lasted", "Price"])
+        r += 1
+        if not it["periods"]:
+            ws.cell(r, 1, "No checks recorded yet").font = Font(italic=True, color="8A93A6")
+            r += 1
+        for per in it["periods"]:
+            vals = [_status_word(per["status"], per["ongoing"]), fmt_when(per["start"]),
+                    "still now" if per["ongoing"] else fmt_when(per["end"] or it["last_checked"]),
+                    per["lasted"], per["price"]]
+            for cidx, v in enumerate(vals, 1):
+                cell = ws.cell(r, cidx, v)
+                cell.border = box
+            ws.cell(r, 1).fill = status_fill(per["status"])
+            ws.cell(r, 1).font = Font(bold=True)
+            r += 1
+        r += 2
+
+    # ---- Sheet 3: every check (raw), for anyone who wants detail
+    ws = wb.create_sheet("All checks (raw)")
+    header(ws, 1, ["Date", "Time", "Product", "Site", "Status", "Price"])
+    for i, ch in enumerate(reversed(checks[-5000:]), 2):
+        for cidx, k in enumerate(["date", "time", "product", "site", "status", "price"], 1):
+            ws.cell(i, cidx, ch.get(k, ""))
+        ws.cell(i, 5).fill = status_fill(ch.get("status"))
+    for i, w in enumerate([12, 10, 46, 14, 16, 12], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
     wb.save(XLSX_FILE)
 
 
-def build_pdf(cfg, events, state, periods):
+def build_pdf(cfg, items):
+    from reportlab.graphics.shapes import Drawing, Rect, String
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     st = getSampleStyleSheet()
-    small = st["BodyText"].clone("small", fontSize=8, leading=10)
-    doc = SimpleDocTemplate(PDF_FILE, pagesize=landscape(A4), leftMargin=12 * mm, rightMargin=12 * mm,
-                            topMargin=12 * mm, bottomMargin=12 * mm, title="Stock Availability Report")
-    rupee = lambda s: str(s).replace("₹", "Rs ")
-    P = lambda s: Paragraph(rupee(s).replace("&", "&amp;").replace("<", "&lt;"), small)
+    small = st["BodyText"].clone("small", fontSize=8.5, leading=11)
+    meta = st["BodyText"].clone("meta", fontSize=9, leading=12, textColor=colors.HexColor("#5B6475"))
+    h3 = st["Heading3"].clone("h3", fontSize=12.5, leading=15, spaceAfter=2, textColor=colors.HexColor("#1F3A5F"))
+    GREEN, RED, GREY = colors.HexColor("#D4EDDA"), colors.HexColor("#F8D7DA"), colors.HexColor("#EEEEEE")
+    G2, R2 = colors.HexColor("#0F9D58"), colors.HexColor("#D93025")
+    W = 186 * mm
+    doc = SimpleDocTemplate(PDF_FILE, pagesize=A4, leftMargin=12 * mm, rightMargin=12 * mm,
+                            topMargin=12 * mm, bottomMargin=12 * mm, title="Stock report - item wise")
+    esc = lambda s: str(s or "").replace("₹", "Rs ").replace("&", "&amp;").replace("<", "&lt;")
+    P = lambda s, style=small: Paragraph(esc(s), style)
+    fillfor = lambda stt: GREEN if stt == IN else RED if stt == OUT else GREY
 
-    def table(headers, rows, widths, status_col=None):
-        data = [[Paragraph(f'<font color="white"><b>{h}</b></font>', small) for h in headers]] + \
+    def table(head, rows, widths, status_col=None, statuses=None):
+        data = [[Paragraph(f'<font color="white"><b>{h}</b></font>', small) for h in head]] + \
                [[P(c) for c in r] for r in rows]
         t = Table(data, colWidths=[w * mm for w in widths], repeatRows=1)
         style = [("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F3A5F")),
-                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#BBBBBB")),
-                 ("VALIGN", (0, 0), (-1, -1), "TOP")]
-        for i, r in enumerate(rows, 1):
-            if status_col is not None:
-                v = str(r[status_col])
-                c = "#D4EDDA" if (IN in v or "BACK" in v) else "#F8D7DA" if (OUT in v or "OUT" in v) else "#EEEEEE"
-                style.append(("BACKGROUND", (status_col, i), (status_col, i), colors.HexColor(c)))
+                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#C9CED8")),
+                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE")]
+        for i, stt in enumerate(statuses or [], 1):
+            style.append(("BACKGROUND", (status_col, i), (status_col, i), fillfor(stt)))
         t.setStyle(TableStyle(style))
         return t
 
-    parts = [Paragraph("Stock Availability Report", st["Title"]),
-             Paragraph(f"Generated {now(cfg).strftime('%d %b %Y, %I:%M %p')} ({cfg['settings'].get('timezone', 'Asia/Kolkata')})",
-                       st["Normal"]), Spacer(1, 6 * mm), Paragraph("Current status", st["Heading2"])]
-    rows = []
-    for p in cfg["products"]:
-        s = state.get(p["url"], {})
-        rows.append([p.get("name") or s.get("title", ""), site_name(p["url"]), s.get("status", "not checked"),
-                     s.get("since", ""), s.get("price", ""), s.get("last_checked", "")])
-    parts.append(table(["Product", "Site", "Status", "Since", "Price", "Last checked"], rows or [["-"] * 6],
-                       [90, 30, 32, 40, 30, 40], status_col=2))
-    parts += [Spacer(1, 6 * mm), Paragraph("Availability periods (when it was in stock and for how long)", st["Heading2"])]
-    parts.append(table(["Product", "Site", "Came in stock", "Went out of stock", "Stayed", "Price"],
-                       periods or [["No periods yet", "", "", "", "", ""]], [90, 28, 40, 40, 32, 30]))
-    parts += [Spacer(1, 6 * mm), Paragraph("Stock change history (newest first)", st["Heading2"])]
-    erows = [[e["date"], e["time"], e["product"], e["site"], e["event"], e.get("price", "")] for e in reversed(events[-300:])]
-    parts.append(table(["Date", "Time", "Product", "Site", "Event", "Price"], erows or [["No changes yet"] + [""] * 5],
-                       [26, 22, 110, 28, 45, 30], status_col=4))
+    def timeline_bar(it):
+        """Green/red strip: the product's whole tracked time, oldest on the left, now on the right."""
+        pers = list(reversed(it["periods"]))
+        total = sum(p["secs"] for p in pers) or 1
+        d = Drawing(W, 16)
+        x = 0
+        for p in pers:
+            w = max(1.2, W * p["secs"] / total)
+            d.add(Rect(x, 4, w, 9, fillColor=G2 if p["status"] == IN else R2, strokeColor=None))
+            x += w
+        d.add(String(0, -5, (fmt_when(pers[0]["start"]) if pers else "") + "   (green = available, red = out of stock)",
+                     fontName="Helvetica", fontSize=7, fillColor=colors.grey))
+        d.add(String(W, -5, "now", fontName="Helvetica", fontSize=7, fillColor=colors.grey, textAnchor="end"))
+        return d
+
+    t = now(cfg)
+    parts = [Paragraph("Stock report - item wise", st["Title"]),
+             P(f"Generated {t.strftime('%d %b %Y, %I:%M %p')}.  Each product has its own section below: "
+               f"when it was available, when it was out of stock, and how long each lasted (latest first).", meta),
+             Spacer(1, 5 * mm), Paragraph("All products at a glance", st["Heading2"])]
+    rows, sts = [], []
+    for it in items:
+        rows.append([it["name"] + (" (removed)" if it["removed"] else ""), it["site"], _status_word(it["status"]),
+                     short_when(it["since"]), f"{it['came_back']}x", f"{it['went_out']}x",
+                     f"{it['pct_in']}%" if it["pct_in"] is not None else "-"])
+        sts.append(it["status"])
+    parts.append(table(["Product", "Site", "Now", "Since", "Came back", "Went out", "Available"],
+                       rows or [["No products yet", "", "", "", "", "", ""]], [60, 19, 24, 31, 17, 17, 18],
+                       status_col=2, statuses=sts))
+    parts.append(Spacer(1, 8 * mm))
+
+    for it in items:
+        block = [Paragraph(esc(it["name"]) + (" <font color='#8A93A6'>(removed)</font>" if it["removed"] else ""), h3)]
+        line = f"{it['site']}  |  Now: <b>{_status_word(it['status'])}</b>"
+        if it["since"]:
+            line += f" since {fmt_when(it['since'])}"
+        if it["price"]:
+            line += f"  |  {it['price']}"
+        block.append(Paragraph(esc(line).replace("&lt;b>", "<b>").replace("&lt;/b>", "</b>"), meta))
+        if it["periods"]:
+            block.append(P(f"Came back in stock {it['came_back']} times, went out of stock {it['went_out']} times.  "
+                           f"Available {it['time_in']} in total, out of stock {it['time_out']} "
+                           f"({it['pct_in']}% available).", meta))
+            block += [Spacer(1, 2 * mm), timeline_bar(it), Spacer(1, 4 * mm)]
+            prow = [[_status_word(p["status"], p["ongoing"]), fmt_when(p["start"]),
+                     "still now" if p["ongoing"] else fmt_when(p["end"] or it["last_checked"]), p["lasted"], p["price"]]
+                    for p in it["periods"][:60]]
+            block.append(table(["Status", "From", "To", "Lasted", "Price"], prow, [36, 42, 42, 36, 30],
+                               status_col=0, statuses=[p["status"] for p in it["periods"][:60]]))
+        else:
+            block.append(P("No checks recorded yet.", meta))
+        block.append(Spacer(1, 9 * mm))
+        parts.append(KeepTogether(block) if len(it["periods"]) <= 18 else block[0])
+        if len(it["periods"]) > 18:
+            parts += block[1:]
     doc.build(parts)
 
 
@@ -958,7 +1104,8 @@ def api_state():
         if s.get("last_ts"):
             due_in = max(0, int(s["last_ts"] + interval_for(cfg, s.get("status")) - time.time()))
         products.append({"name": p.get("name") or s.get("title") or "", "url": p["url"], "site": site_name(p["url"]),
-                         "status": s.get("status", "NOT CHECKED"), "since": s.get("since", ""),
+                         "status": s.get("status") or (periods[-1]["status"] if periods else "NOT CHECKED"),
+            "since": s.get("since") or (periods[-1]["start"] if periods else ""),
                          "price": s.get("price", ""), "last_checked": s.get("last_checked", ""),
                          "target": p.get("target_price"), "detail": s.get("detail", ""), "image": s.get("image", ""),
                          "fails": s.get("fails", 0), "active": p.get("active", True), "history": hist.get(p["url"], []),
@@ -1090,6 +1237,8 @@ def run_web(port, host):
                 return self.send(api_state())
             if path == "/api/settings":
                 return self.send(api_settings_get())
+            if path == "/api/report":
+                return self.send({"items": product_timelines(load_config())})
             if path in files:
                 fpath, ctype = files[path]
                 if path != "/csv":

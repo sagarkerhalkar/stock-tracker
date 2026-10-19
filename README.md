@@ -25,13 +25,21 @@ Keep the black window open (minimise it). Tracking stops when it's closed or the
 
 Mac/Linux: `pip install -r requirements.txt && python -m playwright install chromium`, then `python stock_tracker.py web`.
 
-## Updating to a new version
+## Updating to a new version (your data is kept)
 
-1. Close every black **Restock Watch** window first (or restart your PC).
-2. Replace the files with the new ones – keep your `config.yaml` and `data` folder, they hold your products, alerts and history.
-3. Double-click `2_START.bat`.
+Your products, alert settings and full history live in **`config.yaml`** and the **`data`** folder.
+Updates never touch them.
 
-If you forget step 1, the dashboard shows **Restart needed**, and from this version on a new copy closes the old one by itself.
+**Easiest:** double-click **`6_UPDATE.bat`**. It
+1. copies `config.yaml` and `data` into `backup\<date>` first,
+2. downloads the latest version from GitHub (program files only),
+3. installs anything new.
+Then double-click `2_START.bat` – it closes the old version by itself.
+
+**Or by hand:** unzip the update zip *into the same folder* and choose "Replace". The update zip contains
+no `config.yaml` and no `data` folder, so nothing of yours can be overwritten.
+
+**If you cloned with git:** `git pull` (your `config.yaml` and `data` are never uploaded or replaced).
 
 ## How fast will I know?
 
@@ -86,12 +94,23 @@ enter your Gmail + that 16-letter password. Alerts arrive with the Excel and PDF
 
 **PC pop-up** – on by default. **ntfy** – free phone push app; pick a topic name only you know.
 
-## Reports
+## Reports – item wise
 
-`data/stock_report.xlsx` – sheets: Current Status, Stock Events (every change with date & time),
-Availability Periods (came in → went out → how long), All Checks.
-`data/stock_report.pdf` – same, printable. `data/events.csv` – raw history.
-Download them from the **Reports** page too. A daily summary is sent at 9:00 AM (change `daily_summary_time` in `config.yaml`).
+Every report is organised **product by product**, so you can read one item's story at a glance:
+
+- **Now:** available or out of stock, and since when
+- **Came back in stock X times, went out Y times**, total time available, % of time available
+- A **green/red timeline bar** (green = available, red = out of stock)
+- A table of every period, latest first: **Status · From · To · How long it lasted · Price**
+
+Where to find it:
+- **Reports** page in the dashboard (pick one product or see all)
+- **Excel** (`data/stock_report.xlsx`): *Summary* (one line per product), *Item-wise history* (one block per product), *All checks (raw)*
+- **PDF** (`data/stock_report.pdf`): an at-a-glance table, then one section per product
+- `data/events.csv`: the raw change log
+
+Products you removed keep their history in the reports, marked "(removed)".
+A daily summary is sent at 9:00 AM (change `daily_summary_time` in `config.yaml`).
 
 ## Ports
 

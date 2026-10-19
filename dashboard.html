@@ -195,6 +195,27 @@ th{text-align:left;color:var(--muted);font-weight:700;padding:8px 10px;border-bo
 td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 .tablewrap{overflow:auto}
 
+
+/* ---------- item-wise report ---------- */
+.item{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow);margin-bottom:16px}
+.item .head{display:flex;gap:12px;align-items:center}
+.item .thumb{width:56px;height:56px}
+.item h3{margin:0;font-size:16px;font-weight:800;line-height:1.3}
+.item .sub{color:var(--muted);font-size:13px;margin-top:2px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0}
+.stats div{background:var(--canvas);border-radius:10px;padding:8px 10px}
+.stats span{display:block;font-size:12px;color:var(--muted);font-weight:600}
+.stats b{font-size:16px}
+.tl{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--line)}
+.tl i{display:block;height:100%;min-width:2px}
+.tl .in{background:var(--ok)} .tl .out{background:var(--bad)}
+.tl-legend{display:flex;justify-content:space-between;font-size:12px;color:var(--faint);margin:5px 0 12px}
+.periods td:first-child{font-weight:800;white-space:nowrap}
+.periods .in td:first-child{color:var(--ok)} .periods .out td:first-child{color:var(--bad)}
+.periods td{white-space:nowrap}
+.periods .more td{text-align:center}
+@media (max-width:820px){.stats{grid-template-columns:repeat(2,1fr)}.tl-legend span:nth-child(2){display:none}.item .head{flex-wrap:wrap}}
+
 /* ---------- toast ---------- */
 .toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(360px,calc(100vw - 36px))}
 .toast{background:var(--ink);color:var(--surface);padding:11px 14px;border-radius:12px;box-shadow:var(--lift);font-weight:600;animation:drop .3s ease-out}
@@ -289,14 +310,15 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
   <section class="page" id="page-reports">
     <div class="top"><h1>Reports</h1></div>
     <div class="dl">
-      <a href="/excel"><b>Excel report</b><span>Current status, every change, how long each product stayed available</span></a>
-      <a href="/pdf"><b>PDF report</b><span>The same report, ready to print or share</span></a>
-      <a href="/csv"><b>CSV history</b><span>Raw change log for Google Sheets</span></a>
+      <a href="/excel"><b>Excel report</b><span>Summary sheet + each product's own history</span></a>
+      <a href="/pdf"><b>PDF report</b><span>Same, one section per product, ready to print</span></a>
+      <a href="/csv"><b>CSV log</b><span>Raw change log for Google Sheets</span></a>
     </div>
-    <div class="panel">
-      <h2>Full change history</h2>
-      <div class="tablewrap"><table><thead><tr><th>Date</th><th>Time</th><th>Product</th><th>Site</th><th>Change</th><th>Price</th></tr></thead><tbody id="histBody"></tbody></table></div>
+    <div class="bar">
+      <h2>Each product's history</h2>
+      <select class="field" id="repPick" aria-label="Show product" style="width:auto;max-width:340px"></select>
     </div>
+    <div id="repList"></div>
   </section>
 </main>
 <div class="toasts" id="toasts" aria-live="polite"></div>
@@ -305,7 +327,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 3;
+const APP_VERSION = 4;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -332,6 +354,7 @@ function go(page){
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.id === "page-" + page));
   document.querySelectorAll("nav [data-page]").forEach(b => b.dataset.page === page ? b.setAttribute("aria-current","page") : b.removeAttribute("aria-current"));
   if (page === "alerts") loadSettings();
+  if (page === "reports" && S){ repSig = ""; renderHistory(); }
   if (page === "overview") { unseen = 0; document.title = "Restock Watch"; }
   try { history.replaceState(null, "", "#" + page); } catch (e) {}
 }
@@ -443,10 +466,47 @@ function renderFeed(){
     return `<li class="${c} ${old.size > 1 && !old.has(e.date+e.time+e.url) ? "new" : ""}"><span class="ic">${c === "in" ? "✓" : "✕"}</span><div><span class="what">${evLabel(e)}</span><span class="p" title="${esc(e.product)}">${esc(e.product)}</span><time>${nice(e.date+" "+e.time)} · ${esc(e.site)}${e.price ? " · "+esc(e.price) : ""}</time></div></li>`; }).join("")
     : `<li><div style="grid-column:1/-1;color:var(--muted)">Every change shows up here with its exact date and time.</div></li>`;
 }
-function renderHistory(){
-  $("#histBody").innerHTML = S.events.map(e => `<tr><td>${esc(e.date)}</td><td class="num">${esc(e.time)}</td><td>${esc(e.product)}</td><td>${esc(e.site)}</td><td style="color:var(--${e.new_status === "IN STOCK" ? "ok" : "bad"});font-weight:700">${evLabel(e)}</td><td class="num">${esc(e.price)}</td></tr>`).join("")
-    || `<tr><td colspan="6" style="color:var(--muted)">No changes recorded yet.</td></tr>`;
+let repSig = "", repData = null, repOpen = {};
+async function renderHistory(){
+  if (!$("#page-reports").classList.contains("on")) return;
+  const sig = S.events.length + "|" + (S.events[0] ? S.events[0].date + S.events[0].time : "") + "|" + S.products.length;
+  if (sig !== repSig || !repData){ repSig = sig;
+    try { repData = (await (await fetch("/api/report", {cache:"no-store"})).json()).items; } catch (e) { return; } }
+  const pick = $("#repPick"), cur = pick.value;
+  pick.innerHTML = `<option value="">All products (${repData.length})</option>` + repData.map((it, i) => `<option value="${i}">${esc(it.name.slice(0, 60))}</option>`).join("");
+  pick.value = cur && +cur < repData.length ? cur : "";
+  const list = pick.value === "" ? repData : [repData[+pick.value]];
+  if (!list.length){ $("#repList").innerHTML = `<div class="empty"><b>No history yet</b>Add a product on the Products page – its history builds up here.</div>`; return; }
+  $("#repList").innerHTML = list.map(it => itemReport(it, repData.indexOf(it))).join("");
 }
+function itemReport(it, idx){
+  const c = cls(it.status), word = st => st === "IN STOCK" ? "Available" : st === "OUT OF STOCK" ? "Out of stock" : "Not checked yet";
+  const img = /^https?:\/\//.test(it.image) ? `<img src="${esc(it.image)}" alt="" referrerpolicy="no-referrer">` : `<span class="ph">${esc((it.site || "?")[0])}</span>`;
+  const ps = it.periods, oldest = [...ps].reverse(), total = oldest.reduce((a, p) => a + p.secs, 0) || 1;
+  const show = repOpen[idx] ? ps : ps.slice(0, 8);
+  const when = s => s ? new Date(parseT(s)).toLocaleString("en-IN", {day:"numeric", month:"short", year:"numeric", hour:"numeric", minute:"2-digit"}) : "";
+  return `<section class="item">
+    <div class="head"><div class="thumb">${img}</div><div style="min-width:0;flex:1">
+      <h3>${esc(it.name)}${it.removed ? ` <span class="badge">Removed</span>` : ""}</h3>
+      <div class="sub">${esc(it.site)}${it.price ? " · " + esc(it.price) : ""}</div></div>
+      <span class="badge ${c}"><i></i>${word(it.status)}</span></div>
+    ${ps.length ? `
+    <div class="stats">
+      <div><span>Came back in stock</span><b class="num">${it.came_back} times</b></div>
+      <div><span>Went out of stock</span><b class="num">${it.went_out} times</b></div>
+      <div><span>Available in total</span><b class="num">${esc(it.time_in)}</b></div>
+      <div><span>Available</span><b class="num">${it.pct_in}% of the time</b></div>
+    </div>
+    <div class="tl" role="img" aria-label="Timeline: green available, red out of stock">${oldest.map(p => `<i class="${p.status === "IN STOCK" ? "in" : "out"}" style="flex:${Math.max(p.secs / total, .004)}" title="${word(p.status)}: ${when(p.start)} – ${p.ongoing ? "now" : when(p.end)} (${esc(p.lasted)})"></i>`).join("")}</div>
+    <div class="tl-legend"><span>${when(it.tracking_since)}</span><span>green = available · red = out of stock</span><span>now</span></div>
+    <div class="tablewrap"><table class="periods"><thead><tr><th>Status</th><th>From</th><th>To</th><th>Lasted</th><th>Price</th></tr></thead><tbody>
+      ${show.map(p => `<tr class="${p.status === "IN STOCK" ? "in" : "out"}"><td>${word(p.status)}${p.ongoing ? " (now)" : ""}</td><td>${when(p.start)}</td><td>${p.ongoing ? "still now" : when(p.end || it.last_checked)}</td><td class="num">${esc(p.lasted)}</td><td class="num">${esc(p.price)}</td></tr>`).join("")}
+      ${ps.length > 8 ? `<tr class="more"><td colspan="5"><button class="btn small" data-more="${idx}">${repOpen[idx] ? "Show less" : `Show all ${ps.length} periods`}</button></td></tr>` : ""}
+    </tbody></table></div>` : `<p class="sub" style="margin:12px 0 0">No checks recorded yet.</p>`}
+  </section>`;
+}
+$("#repPick").addEventListener("change", () => renderHistory());
+$("#repList").addEventListener("click", e => { const b = e.target.closest("[data-more]"); if (!b) return; repOpen[b.dataset.more] = !repOpen[b.dataset.more]; renderHistory(); });
 function renderChannels(){
   const on = new Set(S.channels);
   $("#chanDots").innerHTML = ["desktop","telegram","whatsapp","google_chat","email"].map(k => `<span class="${on.has(k) ? "on" : ""}"><i></i>${CH_NAMES[k]}</span>`).join("");
