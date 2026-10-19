@@ -41,6 +41,21 @@ no `config.yaml` and no `data` folder, so nothing of yours can be overwritten.
 
 **If you cloned with git:** `git pull` (your `config.yaml` and `data` are never uploaded or replaced).
 
+## Products or history missing? Bring back old data
+
+If you ever unzip a new version into a *different* folder, that folder starts empty – your old folder still has
+everything. To bring it over:
+
+- The dashboard offers it by itself when it starts empty ("Your old products and history are still on this PC"), or
+- **Reports → Find my old data**, or
+- double-click **`7_RESTORE_OLD_DATA.bat`**, or run `python stock_tracker.py restore "C:\path\to\old\folder"`.
+
+It searches Downloads, Desktop, Documents and OneDrive, and **merges**: the other folder's products, alert settings and
+full history are added; nothing here is deleted; a backup goes to `backup\` first; the old folder isn't changed.
+
+**Run only one copy.** Two copies from two folders each keep their own products and history. If that happens the
+dashboard shows "Two copies of Restock Watch are running" with both folder paths.
+
 ## How fast will I know?
 
 | Product is… | Checked every (default) | Why |

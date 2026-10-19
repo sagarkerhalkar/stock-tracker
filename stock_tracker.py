@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 4
+APP_VERSION = 6
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -61,9 +61,12 @@ def load_config():
         # first run: create config.yaml from the example, with an empty product list
         with open(os.path.join(BASE, "config.example.yaml"), encoding="utf-8") as f:
             text = f.read()
-        a, b = text.index("products:"), text.index("# ----", text.index("products:"))
+        m = re.search(r"(?m)^products:\s*$", text)
+        if m:
+            end = text.find("\n# ----", m.end())
+            text = text[:m.start()] + "products: []\n" + (text[end:] if end != -1 else "")
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            f.write(text[:a] + "products: []\n\n" + text[b:])
+            f.write(text)
     with open(CONFIG_FILE, encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
     cfg.setdefault("settings", {})
@@ -589,7 +592,7 @@ def product_timelines(cfg, events=None, state=None):
     for e in events:
         by_url.setdefault(e.get("url") or e["product"], []).append(e)
     order = [p["url"] for p in cfg["products"]]
-    order += [u for u in by_url if u not in order]          # products removed later still keep their history
+    order += [u for u in by_url if u not in order and "B0CHX1W1XY" not in u]   # removed products keep history
     conf = {p["url"]: p for p in cfg["products"]}
     out = []
     for url in order:
@@ -1031,6 +1034,180 @@ def run_forever(cfg_initial=None):
         WAKE.clear()
 
 
+# --------------------------------------------------------------------------- find / restore old data
+SKIP_DIRS = {"appdata", "node_modules", ".git", "windows", "program files", "program files (x86)", "$recycle.bin",
+             "site-packages", "__pycache__", ".cache", "library", "venv", ".venv", "programdata"}
+
+
+def _data_info(folder):
+    cfg_path, data = os.path.join(folder, "config.yaml"), os.path.join(folder, "data")
+    products = 0
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            products = len((yaml.safe_load(f) or {}).get("products") or [])
+    except Exception:
+        pass
+    events = max(0, len(read_csv(os.path.join(data, "events.csv"))))
+    checks = 0
+    try:
+        with open(os.path.join(data, "checks.csv"), encoding="utf-8-sig") as f:
+            checks = max(0, sum(1 for _ in f) - 1)
+    except OSError:
+        pass
+    stamps = [os.path.getmtime(p) for p in (cfg_path, os.path.join(data, "state.json"), os.path.join(data, "events.csv"))
+              if os.path.exists(p)]
+    if not products and not events and not checks:
+        return None
+    return {"path": folder, "products": products, "events": events, "checks": checks,
+            "last_used": datetime.fromtimestamp(max(stamps)).strftime("%d %b %Y, %I:%M %p") if stamps else "",
+            "_ts": max(stamps) if stamps else 0}
+
+
+def find_old_data(max_dirs=60000):
+    """Look through the usual places (Downloads, Desktop, Documents, OneDrive, next to this folder, backups)
+    for other Restock Watch / Stock Tracker folders that still hold products or history."""
+    home = os.path.expanduser("~")
+    roots = [os.path.dirname(BASE), os.path.join(BASE, "backup")]
+    for name in ("Downloads", "Desktop", "Documents"):
+        roots.append(os.path.join(home, name))
+    try:
+        roots += [os.path.join(home, d) for d in os.listdir(home) if d.lower().startswith("onedrive")]
+    except OSError:
+        pass
+    roots.append(home)
+    me = os.path.normcase(os.path.abspath(BASE))
+    seen, found, visited = set(), [], 0
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        base_depth = root.rstrip("\\/").count(os.sep)
+        for dirpath, dirnames, filenames in os.walk(root):
+            visited += 1
+            if visited > max_dirs:
+                break
+            depth = dirpath.count(os.sep) - base_depth
+            dirnames[:] = [d for d in dirnames if d.lower() not in SKIP_DIRS and not d.startswith(".")
+                           and depth < (2 if root == home else 6)]
+            key = os.path.normcase(os.path.abspath(dirpath))
+            if key == me or key in seen:
+                continue
+            looks_like_app = "stock_tracker.py" in filenames or (
+                "config.yaml" in filenames and os.path.isdir(os.path.join(dirpath, "data"))) or (
+                os.path.basename(os.path.dirname(dirpath)).lower() == "backup" and "config.yaml" in filenames)
+            if looks_like_app:
+                seen.add(key)
+                info = _data_info(dirpath)
+                if info:
+                    found.append(info)
+    found.sort(key=lambda x: (x["events"] + x["checks"] > 0, x["_ts"]), reverse=True)
+    return found
+
+
+def _is_example(p):
+    return str(p.get("name", "")).startswith("Example -") or "B0CHX1W1XY" in str(p.get("url", ""))
+
+
+def _merge_csv(dst, src, fields, key):
+    rows = {}
+    for path in (dst, src):
+        for r in read_csv(path):
+            rows.setdefault(key(r), r)
+    out = sorted(rows.values(), key=lambda r: f"{r.get('date', '')} {r.get('time', '')}")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    with open(dst, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        w.writeheader()
+        for r in out:
+            w.writerow({k: r.get(k, "") for k in fields})
+    return len(out)
+
+
+def restore_old_data(folder):
+    """MERGE products, alert settings and full history from `folder` into this app.
+    Nothing is deleted: what is here stays, the other folder's data is added, and a backup is made first."""
+    import shutil
+    folder = os.path.abspath(folder)
+    if os.path.normcase(folder) == os.path.normcase(BASE):
+        raise ValueError("That is this folder already")
+    if not _data_info(folder):
+        raise ValueError("No products or history found in that folder")
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    bk = os.path.join(BASE, "backup", f"{stamp}_before_merge")
+    os.makedirs(bk, exist_ok=True)
+    if os.path.exists(CONFIG_FILE):
+        shutil.copy2(CONFIG_FILE, bk)
+    if os.path.isdir(DATA):
+        shutil.copytree(DATA, os.path.join(bk, "data"), dirs_exist_ok=True)
+    src_cfg, src_data = os.path.join(folder, "config.yaml"), os.path.join(folder, "data")
+    added = 0
+    with CHECK_LOCK:                                   # don't let a check write while we merge
+        cur = load_config()
+        old = {}
+        if os.path.exists(src_cfg):
+            with open(src_cfg, encoding="utf-8") as f:
+                old = yaml.safe_load(f) or {}
+        have = {p["url"] for p in cur["products"]}
+        cur["products"] = [p for p in cur["products"] if not _is_example(p)]
+        for p in old.get("products") or []:
+            if p.get("url") and p["url"] not in have and not _is_example(p):
+                cur["products"].append(p)
+                have.add(p["url"])
+                added += 1
+        for k, v in (old.get("notifications") or {}).items():      # keep any alert app that was set up there
+            mine = cur["notifications"].get(k) or {}
+            if isinstance(v, dict) and v.get("enabled") and not mine.get("enabled"):
+                cur["notifications"][k] = v
+        for k, v in (old.get("settings") or {}).items():
+            cur["settings"].setdefault(k, v)
+        save_config(cur)
+        if os.path.isdir(src_data):
+            _merge_csv(EVENTS_CSV, os.path.join(src_data, "events.csv"), EVENT_FIELDS,
+                       lambda r: (r.get("date"), r.get("time"), r.get("url") or r.get("product"), r.get("new_status")))
+            _merge_csv(CHECKS_CSV, os.path.join(src_data, "checks.csv"), CHECK_FIELDS,
+                       lambda r: tuple(r.get(k, "") for k in CHECK_FIELDS))
+            st_path = os.path.join(src_data, "state.json")
+            if os.path.exists(st_path):
+                with open(st_path, encoding="utf-8") as f:
+                    theirs = json.load(f)
+                mine = load_state()
+                for url, v in theirs.items():
+                    if url not in mine or str(v.get("last_checked", "")) > str(mine[url].get("last_checked", "")):
+                        mine[url] = v
+                save_state(mine)
+    WAKE.set()
+    try:
+        build_reports(load_config())
+    except Exception:
+        pass
+    info = _data_info(BASE) or {}
+    return {"ok": True, "added": added, "products": info.get("products", 0), "events": info.get("events", 0),
+            "checks": info.get("checks", 0), "backup": bk}
+
+
+def restore_cli():
+    print("\n  Looking for your old Restock Watch data (Downloads, Desktop, Documents, OneDrive)...\n")
+    found = find_old_data()
+    cur = _data_info(BASE) or {"products": 0, "events": 0}
+    print(f"  This folder now has: {cur['products']} products, {cur['events']} stock changes\n")
+    if not found:
+        print("  No other Restock Watch folders with data were found.")
+        print("  If you know where the old folder is, run:  python stock_tracker.py restore \"C:\\path\\to\\old\\folder\"\n")
+        return
+    for i, f in enumerate(found, 1):
+        print(f"  {i}. {f['path']}")
+        print(f"     {f['products']} products, {f['events']} stock changes, {f['checks']} checks  - last used {f['last_used']}\n")
+    print("  Bringing data back MERGES it: products and history from that folder are added to this one.")
+    print("  Nothing here is deleted, and a backup is made first.\n")
+    choice = input("  Type the number to bring back (or press Enter to cancel): ").strip()
+    if not choice.isdigit() or not 1 <= int(choice) <= len(found):
+        print("  Cancelled - nothing changed.")
+        return
+    r = restore_old_data(found[int(choice) - 1]["path"])
+    print(f"\n  Done! Added {r['added']} products. This folder now has {r['products']} products, "
+          f"{r['events']} stock changes and {r['checks']} checks.")
+    print(f"  (What was here before is saved in {r['backup']})\n")
+
+
 # --------------------------------------------------------------------------- ports + web dashboard
 def port_is_free(port, host="0.0.0.0"):
     import socket
@@ -1104,8 +1281,7 @@ def api_state():
         if s.get("last_ts"):
             due_in = max(0, int(s["last_ts"] + interval_for(cfg, s.get("status")) - time.time()))
         products.append({"name": p.get("name") or s.get("title") or "", "url": p["url"], "site": site_name(p["url"]),
-                         "status": s.get("status") or (periods[-1]["status"] if periods else "NOT CHECKED"),
-            "since": s.get("since") or (periods[-1]["start"] if periods else ""),
+                         "status": s.get("status", "NOT CHECKED"), "since": s.get("since", ""),
                          "price": s.get("price", ""), "last_checked": s.get("last_checked", ""),
                          "target": p.get("target_price"), "detail": s.get("detail", ""), "image": s.get("image", ""),
                          "fails": s.get("fails", 0), "active": p.get("active", True), "history": hist.get(p["url"], []),
@@ -1115,7 +1291,8 @@ def api_state():
     nxt = PROGRESS.get("next_check")
     events = list(reversed(read_csv(EVENTS_CSV)[-80:]))
     today = now(cfg).strftime("%Y-%m-%d")
-    return {"app": "restock-watch", "version": APP_VERSION, "products": products, "events": events,
+    return {"app": "restock-watch", "version": APP_VERSION, "folder": BASE, "other_copies": OTHER_COPIES,
+            "products": products, "events": events,
             "changes_today": sum(1 for e in events if e["date"] == today and not e["event"].startswith("FIRST")),
             "progress": {k: PROGRESS[k] for k in ("running", "done", "total", "current", "last_run")},
             "next_check_in": max(0, int(nxt - time.time())) if nxt else None,
@@ -1186,6 +1363,35 @@ SAMPLE_ALERT = {"product": "Test product - Restock Watch is connected", "site": 
                 "url": "https://www.amazon.in/", "image": "", "previous": "This is a test. Real alerts look like this."}
 
 
+OTHER_COPIES = []
+
+
+def watch_other_copies(my_port):
+    """Every 2 minutes, look for another Restock Watch running from a DIFFERENT folder (it would keep its own
+    separate products and history, which is confusing). The dashboard shows a warning if one is found."""
+    local = requests.Session()
+    local.trust_env = False
+    time.sleep(5)            # let any copy that is starting at the same moment finish starting
+    while True:
+        found = []
+        for port in range(8780, 8811):
+            if port == my_port or port_is_free(port):
+                continue
+            try:
+                d = local.get(f"http://127.0.0.1:{port}/api/state", timeout=1.5).json()
+                if "products" in d and os.path.normcase(str(d.get("folder") or "?")) != os.path.normcase(BASE):
+                    found.append({"port": port, "folder": d.get("folder") or "an older version (folder unknown)",
+                                  "products": len(d["products"])})
+            except Exception:
+                pass
+        OTHER_COPIES[:] = found
+        if found:
+            for f in found:
+                print(f"  !! Another Restock Watch is running from {f['folder']} (port {f['port']}). "
+                      f"Close it so all your products stay in one place.")
+        time.sleep(60)
+
+
 def stop_old_copy(port):
     """If an older Restock Watch is already running on this port, ask it to close so the new one can take over."""
     local = requests.Session()
@@ -1237,6 +1443,8 @@ def run_web(port, host):
                 return self.send(api_state())
             if path == "/api/settings":
                 return self.send(api_settings_get())
+            if path == "/api/olddata":
+                return self.send({"found": [{k: v for k, v in f.items() if k != "_ts"} for f in find_old_data()]})
             if path == "/api/report":
                 return self.send({"items": product_timelines(load_config())})
             if path in files:
@@ -1317,6 +1525,8 @@ def run_web(port, host):
                 print("\n  Stopped because a newer copy of Restock Watch was started.\n")
                 threading.Timer(0.3, lambda: os._exit(0)).start()
                 return
+            elif self.path == "/api/restore":
+                return self.send(restore_old_data(body.get("path", "")))
             elif self.path == "/api/telegram/find":
                 token = (body.get("bot_token") or "").strip() or str(
                     (cfg["notifications"].get("telegram") or {}).get("bot_token", ""))
@@ -1331,6 +1541,7 @@ def run_web(port, host):
         port = new
     srv = ThreadingHTTPServer((host, port), Handler)
     threading.Thread(target=run_forever, daemon=True).start()
+    threading.Thread(target=watch_other_copies, args=(port,), daemon=True).start()
     link = f"http://localhost:{port}"
     print(f"\n  Restock Watch is running:  {link}\n  Keep this window open (minimise it). Ctrl+C to stop.\n")
     if os.environ.get("NO_BROWSER") != "1":
@@ -1348,6 +1559,8 @@ def main():
     w = sub.add_parser("web", help="web dashboard + tracking (choose your port)")
     w.add_argument("--port", type=int, default=None, help="port number (default from config, else 8787)")
     w.add_argument("--host", default=None, help="127.0.0.1 = only this PC, 0.0.0.0 = phone on same Wi-Fi too")
+    rs = sub.add_parser("restore", help="find and bring back products + history from an older folder")
+    rs.add_argument("folder", nargs="?", default=None)
     pp = sub.add_parser("ports", help="show busy/free ports")
     pp.add_argument("--from", dest="start", type=int, default=8000)
     pp.add_argument("--to", dest="end", type=int, default=9000)
@@ -1369,6 +1582,13 @@ def main():
     if args.cmd == "web":
         s = cfg["settings"]
         run_web(args.port or int(s.get("web_port", 8787)), args.host or s.get("web_host", "127.0.0.1"))
+    elif args.cmd == "restore":
+        if args.folder:
+            r = restore_old_data(args.folder)
+            print(f"Done! Added {r['added']} products. Now {r['products']} products, {r['events']} stock changes, "
+                  f"{r['checks']} checks. Backup: {r['backup']}")
+        else:
+            restore_cli()
     elif args.cmd == "ports":
         show_ports(args.start, args.end)
     elif args.cmd == "add":

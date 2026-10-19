@@ -216,6 +216,16 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 .periods .more td{text-align:center}
 @media (max-width:820px){.stats{grid-template-columns:repeat(2,1fr)}.tl-legend span:nth-child(2){display:none}.item .head{flex-wrap:wrap}}
 
+
+/* ---------- restore old data ---------- */
+.restore{background:var(--surface);border:1px solid var(--line);border-left:5px solid var(--brand);border-radius:14px;padding:16px;box-shadow:var(--lift);margin-bottom:18px}
+.restore h3{margin:0 0 4px;font-size:16px;font-weight:800}
+.restore p{margin:0 0 12px;color:var(--muted);font-size:13px}
+.restore .opt{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;margin-top:8px;background:var(--canvas)}
+.restore .opt div{flex:1;min-width:0}
+.restore .opt code{display:block;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.restore .opt b{font-size:14px}
+
 /* ---------- toast ---------- */
 .toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(360px,calc(100vw - 36px))}
 .toast{background:var(--ink);color:var(--surface);padding:11px 14px;border-radius:12px;box-shadow:var(--lift);font-weight:600;animation:drop .3s ease-out}
@@ -258,6 +268,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
       <button class="btn primary" id="checkBtn">Check now</button>
     </div>
     <div class="banners" id="banners" aria-live="assertive"></div>
+    <div class="restore" id="restore" hidden></div>
     <div class="kpis">
       <div class="kpi"><span>Watching</span><b class="num" id="kAll">0</b></div>
       <div class="kpi ok"><span>Available</span><b class="num" id="kIn">0</b></div>
@@ -314,6 +325,8 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
       <a href="/pdf"><b>PDF report</b><span>Same, one section per product, ready to print</span></a>
       <a href="/csv"><b>CSV log</b><span>Raw change log for Google Sheets</span></a>
     </div>
+    <p style="margin:-6px 0 18px;font-size:13px;color:var(--muted)">Missing older products or history? <button class="btn small" id="findOld">Find my old data</button></p>
+    <div class="restore" id="restore2" hidden></div>
     <div class="bar">
       <h2>Each product's history</h2>
       <select class="field" id="repPick" aria-label="Show product" style="width:auto;max-width:340px"></select>
@@ -327,7 +340,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 4;
+const APP_VERSION = 6;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -373,6 +386,8 @@ async function load(){
     S.products.forEach(p => { p.history = p.history || []; });
     S.changes_today = S.changes_today || 0; S.channels = S.channels || [];
     renderAll(); detect();
+    otherCopies();
+    if (!restoreAsked){ restoreAsked = true; if (!S.products.length && !S.events.length) findOld("#restore", false); }
   } catch (e) { console.error(e); }
   setTimeout(load, S?.progress?.running ? 1200 : 3000);
 }
@@ -481,7 +496,7 @@ async function renderHistory(){
 }
 function itemReport(it, idx){
   const c = cls(it.status), word = st => st === "IN STOCK" ? "Available" : st === "OUT OF STOCK" ? "Out of stock" : "Not checked yet";
-  const img = /^https?:\/\//.test(it.image) ? `<img src="${esc(it.image)}" alt="" referrerpolicy="no-referrer">` : `<span class="ph">${esc((it.site || "?")[0])}</span>`;
+  const img = /^https?:\/\//.test(it.image) ? `<img src="${esc(it.image)}" alt="" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'ph',textContent:'${esc((it.site || "?")[0])}'}))">` : `<span class="ph">${esc((it.site || "?")[0])}</span>`;
   const ps = it.periods, oldest = [...ps].reverse(), total = oldest.reduce((a, p) => a + p.secs, 0) || 1;
   const show = repOpen[idx] ? ps : ps.slice(0, 8);
   const when = s => s ? new Date(parseT(s)).toLocaleString("en-IN", {day:"numeric", month:"short", year:"numeric", hour:"numeric", minute:"2-digit"}) : "";
@@ -538,7 +553,7 @@ function announce(e){
   const inS = e.new_status === "IN STOCK", label = evLabel(e);
   const p = S.products.find(x => x.url === e.url) || {};
   const b = document.createElement("div"); b.className = "banner " + (inS ? "in" : "out");
-  const img = /^https?:\/\//.test(p.image) ? `<img src="${esc(p.image)}" alt="" referrerpolicy="no-referrer">` : `<span class="ph"></span>`;
+  const img = /^https?:\/\//.test(p.image) ? `<img src="${esc(p.image)}" alt="" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'">` : `<span class="ph"></span>`;
   b.innerHTML = `${img}<div class="grow"><div class="t">${label}</div><div class="s">${esc(e.product)} · ${esc(e.site)}${e.price ? " · " + esc(e.price) : ""} · ${nice(e.date+" "+e.time)}</div></div>
     ${inS ? `<a class="btn primary small" href="${/^https?:\/\//.test(e.url) ? esc(e.url) : "#"}" target="_blank" rel="noopener">Open on ${esc(e.site)}</a>` : ""}<button class="x" aria-label="Dismiss">×</button>`;
   b.querySelector(".x").onclick = () => b.remove();
@@ -671,6 +686,45 @@ $("#chans").addEventListener("change", async ev => { const t = ev.target.closest
   const st = sec.querySelector(".st"); st.className = "st badge " + (t.checked ? "in" : ""); st.innerHTML = `<i></i>${t.checked ? "On" : "Off"}`; load(); });
 $("#saveSpeed").onclick = async () => { const r = await post("/api/settings", {fast_check_minutes:+$("#fastMin").value, check_every_minutes:+$("#normMin").value});
   $("#speedRes").textContent = r.ok ? "Saved" : r.error; $("#speedRes").className = "result " + (r.ok ? "ok" : "err"); };
+
+
+/* ---------- bring back old data ---------- */
+let restoreAsked = false;
+function otherCopies(){
+  const list = S.other_copies || [], old = $("#others");
+  if (!list.length){ old?.remove(); return; }
+  const html = `<div class="grow"><div class="t" style="color:var(--warn)">Two copies of Restock Watch are running</div><div class="s">
+    This one uses <b>${esc(S.folder)}</b>. Another is running from ${list.map(o => `<b>${esc(o.folder)}</b> (port ${o.port}, ${o.products} products)`).join(", ")}.
+    Each copy keeps its own products and history. To keep everything in one place: press <b>Find my old data</b> on the Reports page to bring the other copy's products here, then close the other black window.</div></div>`;
+  if (old){ old.querySelector(".grow").outerHTML = html; return; }
+  const b = document.createElement("div"); b.id = "others"; b.className = "banner"; b.style.borderLeftColor = "var(--warn)"; b.innerHTML = html;
+  $("#banners").prepend(b);
+}
+async function findOld(boxSel, manual){
+  const box = $(boxSel); box.hidden = false;
+  box.innerHTML = `<h3>Looking for your old data…</h3><p>Checking Downloads, Desktop, Documents and OneDrive for older Restock Watch folders.</p>`;
+  let r; try { r = await (await fetch("/api/olddata", {cache:"no-store"})).json(); } catch (e) { box.hidden = true; return; }
+  if (!r.found.length){
+    if (!manual){ box.hidden = true; return; }
+    box.innerHTML = `<h3>No older data found automatically</h3><p>Find your old folder (it has <b>config.yaml</b> and a <b>data</b> folder), then copy those two into this folder and press Check now. Or run <b>7_RESTORE_OLD_DATA.bat</b>.</p>`;
+    return;
+  }
+  box.innerHTML = `<h3>${manual ? "Older data found" : "Your old products and history are still on this PC"}</h3>
+    <p>Pick the folder to bring back. Its products, alert settings and full history are added to this one. Nothing here is deleted, the old folder isn't changed, and a backup is made first.</p>
+    ${r.found.map((f, i) => `<div class="opt"><div><b>${f.products} products · ${f.events} stock changes</b><code title="${esc(f.path)}">${esc(f.path)}</code><span style="font-size:12px;color:var(--faint)">Last used ${esc(f.last_used)}</span></div>
+      <button class="btn primary small" data-restore="${i}">Bring back</button></div>`).join("")}
+    <div style="margin-top:10px"><button class="btn small" data-close>Not now</button></div>`;
+  box.onclick = async e => {
+    if (e.target.closest("[data-close]")){ box.hidden = true; return; }
+    const b = e.target.closest("[data-restore]"); if (!b) return;
+    b.disabled = true; b.textContent = "Bringing back…";
+    const res = await post("/api/restore", {path: r.found[+b.dataset.restore].path});
+    if (!res.ok){ b.disabled = false; b.textContent = "Bring back"; toast(res.error || "Couldn't copy the data"); return; }
+    box.innerHTML = `<h3>Done – your data is back</h3><p>${res.products} products and ${res.events} stock changes restored. Checking them now.</p>`;
+    gridSig = ""; repSig = ""; lastKey = null; setTimeout(load, 300); setTimeout(() => box.hidden = true, 8000);
+  };
+}
+$("#findOld").onclick = () => findOld("#restore2", true);
 
 go((location.hash || "#overview").slice(1).replace(/[^a-z]/g, "") || "overview");
 load();
