@@ -288,6 +288,8 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 .netline{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:0 0 14px;padding:8px 12px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
 .netline a{font-weight:700}
 
+.why{font-size:12px;color:var(--faint);margin:-4px 0 10px;line-height:1.4}
+
 /* ---------- toast ---------- */
 .toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(360px,calc(100vw - 36px))}
 .toast{background:var(--ink);color:var(--surface);padding:11px 14px;border-radius:12px;box-shadow:var(--lift);font-weight:600;animation:drop .3s ease-out}
@@ -429,7 +431,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 10;
+const APP_VERSION = 11;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -501,7 +503,7 @@ function count(sel, v){
 /* ---------- product cards ---------- */
 function renderGrid(){
   const shown = S.products.filter(p => filter === "all" || cls(p.status) === filter);
-  const sig = filter + JSON.stringify(shown.map(p => [p.url,p.status,p.price,p.since,p.fails,p.name,p.image,p.active,p.target,p.history.length]));
+  const sig = filter + JSON.stringify(shown.map(p => [p.url,p.status,p.price,p.since,p.fails,p.name,p.image,p.active,p.target,p.history.length,p.detail,p.last_ok,p.last_checked]));
   const grid = $("#grid");
   if (sig === gridSig){ grid.querySelectorAll(".card").forEach(tick); return; }
   const isNew = new Set(shown.map(p => p.url)); grid.querySelectorAll(".card").forEach(c => isNew.delete(c.dataset.url));
@@ -523,13 +525,15 @@ function card(p, i, enter){
       <h3 title="${esc(p.name)}">${esc(p.name || p.url)}</h3></div></div>
     <div class="pricebox"><div class="price num">${esc(p.price) || "—"}${p.target ? `<small>Alert below ₹${Number(p.target).toLocaleString("en-IN")}</small>` : `<small>Current price</small>`}</div>${spark(p.history, c)}</div>
     <p class="state" data-state></p>
-    ${p.fails >= 3 ? `<p class="warnline">The site blocked the last ${p.fails} checks. It keeps trying automatically.</p>` : ""}
+    ${p.active && p.last_ok === false && (c === "in" || c === "out") ? `<p class="warnline">Couldn't check it just now – this is the last known status. It keeps trying${p.fails >= 2 ? ` (${p.fails} tries failed)` : ""}.</p>` : ""}
+    ${p.detail ? `<p class="why">Why: ${esc(p.detail)}${p.last_checked ? ` · checked ${esc(since(p.last_checked))} ago` : ""}</p>` : ""}
     <div class="foot"><span class="next num" data-next></span>
       <a class="btn small" href="${href}" target="_blank" rel="noopener">Open</a>
       <div class="menu"><button class="btn small" data-menu aria-haspopup="true" aria-label="More actions">•••</button>
         <div class="menu-list" role="menu">
           <button data-act="target">Set price alert</button>
           <button data-act="rename">Rename</button>
+          <button data-act="checkone">Check this product now</button>
           <button data-act="download">Download history (Excel)</button>
           <button data-act="pause">${p.active ? "Pause watching" : "Resume watching"}</button>
           <button data-act="remove" class="danger">Remove</button>
@@ -746,6 +750,7 @@ $("#grid").addEventListener("click", async ev => {
   const url = a.closest(".card").dataset.url, p = S.products.find(x => x.url === url);
   a.closest(".menu-list").classList.remove("open");
   if (a.dataset.act === "download"){ location.href = dlLink([url], "xlsx"); return; }
+  if (a.dataset.act === "checkone"){ const r = await post("/api/check-one", {url}); toast(r.ok ? "Checking it now – takes up to a minute (it double-checks in a real browser)" : r.error); setTimeout(load, 1500); return; }
   if (a.dataset.act === "remove"){ if (!confirm(`Stop watching "${p.name || url}"?\n\nIts history will be hidden from reports. You can still see it with "Show removed products" on the Reports page.`)) return;
     await post("/api/remove", {url}); toast("Removed – its history is hidden"); repSig = ""; }
   if (a.dataset.act === "pause"){ await post("/api/update", {url, active: !p.active}); toast(p.active ? "Paused" : "Watching again"); }

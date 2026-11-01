@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 10
+APP_VERSION = 11
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -130,69 +130,106 @@ def site_name(url):
 
 
 # --------------------------------------------------------------------------- fetching
-def fetch_html(url, settings):
-    """Download the product page. Uses a real browser (Playwright) if enabled or if plain request is blocked."""
-    use_browser = settings.get("use_browser", "auto")  # auto | always | never
-    html, err = None, None
-    if use_browser != "always":
-        try:
-            headers = {
-                "User-Agent": random.choice(USER_AGENTS),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-IN,en;q=0.9",
-                "Cache-Control": "no-cache",
-            }
-            r = requests.get(url, headers=headers, timeout=30)
-            if r.status_code == 200 and not looks_blocked(r.text):
-                return r.text, None
-            err = f"HTTP {r.status_code}" + (" (blocked/captcha)" if looks_blocked(r.text) else "")
-            html = r.text
-        except Exception as e:
-            err = str(e)
-    if use_browser in ("auto", "always"):
-        b_html, b_err = fetch_with_browser(url)
-        if b_html:
-            return b_html, None
-        err = f"{err or ''} | browser: {b_err}".strip(" |")
-    return html, err
+import threading as _threading
+
+BROWSER_LOCK = _threading.Lock()
 
 
-def fetch_with_browser(url):
+def canonical_url(url):
+    """Drop tracking/referral parts so we fetch the plain product page every shopper sees.
+    Amazon -> /dp/ASIN.  Flipkart -> keep only pid (lid pins one seller's listing)."""
+    from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
     try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return None, "playwright not installed (optional: pip install playwright && playwright install chromium)"
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(user_agent=random.choice(USER_AGENTS[:2]), locale="en-IN")
-            page.goto(url, timeout=60000, wait_until="domcontentloaded")
-            page.wait_for_timeout(4000)
-            html = page.content()
-            browser.close()
-            if looks_blocked(html):
-                return None, "blocked/captcha"
-            return html, None
-    except Exception as e:
-        return None, str(e)
+        u = urlsplit(url.strip())
+        host = u.netloc.lower()
+        if "amazon." in host:
+            m = re.search(r"/(?:dp|gp/product|gp/aw/d)/([A-Z0-9]{10})", u.path, re.I)
+            if m:
+                return f"{u.scheme}://{u.netloc}/dp/{m.group(1).upper()}"
+        if "flipkart.com" in host:
+            q = parse_qs(u.query)
+            keep = {"pid": q["pid"][0]} if q.get("pid") else {}
+            return urlunsplit((u.scheme, u.netloc, u.path, urlencode(keep), ""))
+    except Exception:
+        pass
+    return url
 
 
 def looks_blocked(html):
-    t = (html or "")[:200000].lower()
-    return any(s in t for s in [
-        "enter the characters you see below", "api-services-support@amazon.com",
-        "to discuss automated access to amazon data", "are you a human", "captcha-delivery",
-        "access denied", "request blocked", "please verify you are a human",
-    ])
+    """A captcha / robot-check page (these are small); real product pages are hundreds of KB."""
+    t = (html or "").lower()
+    if not t:
+        return False
+    strong = ("enter the characters you see below", "to discuss automated access to amazon data",
+              "captcha-delivery", "please verify you are a human", "/errors/validatecaptcha")
+    if any(s in t for s in strong):
+        return True
+    return len(t) < 60000 and any(s in t for s in ("are you a human", "access denied", "request blocked",
+                                                     "something's not right", "unusual traffic"))
+
+
+def fetch_plain(url):
+    try:
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-IN,en;q=0.9",
+            "Cache-Control": "no-cache",
+        }
+        r = requests.get(url, headers=headers, timeout=30)
+        if r.status_code == 200 and not looks_blocked(r.text):
+            return r.text, None
+        return None, f"HTTP {r.status_code}" + (" (robot check)" if looks_blocked(r.text) else "")
+    except Exception as e:
+        return None, str(e)[:120]
+
+
+def fetch_with_browser(url):
+    """Open the page in a real Chrome (your installed Chrome if possible), like a person would."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None, "browser check not installed (run 1_INSTALL.bat)"
+    with BROWSER_LOCK:                    # one browser at a time
+        try:
+            with sync_playwright() as p:
+                profile = os.path.join(DATA, "browser-profile")
+                os.makedirs(profile, exist_ok=True)
+                opts = dict(headless=True, locale="en-IN", timezone_id="Asia/Kolkata",
+                            viewport={"width": 1366, "height": 900},
+                            args=["--disable-blink-features=AutomationControlled"])
+                try:
+                    ctx = p.chromium.launch_persistent_context(profile, channel="chrome", **opts)
+                except Exception:
+                    ctx = p.chromium.launch_persistent_context(profile, **opts)
+                ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto(url, timeout=60000, wait_until="domcontentloaded")
+                try:   # wait until the buy area has appeared
+                    page.wait_for_selector("#availability, #add-to-cart-button, #buy-now-button, #outOfStock, "
+                                           "button:has-text('Add to cart'), button:has-text('Buy now'), "
+                                           "button:has-text('Notify me'), :text('Sold Out'), "
+                                           ":text('Currently Unavailable')", timeout=12000)
+                except Exception:
+                    pass
+                page.wait_for_timeout(1500)
+                html = page.content()
+                ctx.close()
+                if looks_blocked(html):
+                    return None, "robot check in browser too"
+                return html, None
+        except Exception as e:
+            return None, "browser: " + str(e).splitlines()[0][:120]
 
 
 # --------------------------------------------------------------------------- stock detection
 SCHEMA_IN = ("instock", "limitedavailability", "onlineonly", "instoreonly", "preorder", "presale", "backorder")
 SCHEMA_OUT = ("outofstock", "soldout", "discontinued")
 
-OUT_WORDS = ["currently unavailable", "out of stock", "sold out", "notify me", "coming soon",
-             "temporarily unavailable", "not available", "no longer available", "item is unavailable"]
-IN_WORDS = ["add to cart", "add to bag", "buy now", "add to basket", "in stock"]
+OUT_LABELS = ("sold out", "currently unavailable", "out of stock", "coming soon", "notify me",
+              "temporarily unavailable", "no longer available", "item is unavailable",
+              "this item is currently out of stock")
+IN_LABELS = ("add to cart", "add to bag", "buy now", "add to basket", "go to cart", "go to bag")
 
 
 def text_of(el):
@@ -240,7 +277,7 @@ def _find_price(soup, html):
 
 
 def schema_availability(soup):
-    """Read schema.org JSON-LD / microdata availability - works on most shopping sites."""
+    """Read schema.org availability (JSON-LD / microdata). If any offer for the product is buyable -> IN."""
     found = []
     for s in soup.find_all("script", type="application/ld+json"):
         try:
@@ -260,61 +297,84 @@ def schema_availability(soup):
         found.append(el.get("href") or el.get("content") or text_of(el))
     for el in soup.select("meta[property='product:availability'], meta[property='og:availability']"):
         found.append(el.get("content", ""))
-    for raw in found:
-        v = raw.lower().replace(" ", "").replace("_", "")
-        if any(k in v for k in SCHEMA_OUT):
-            return OUT, f"schema: {raw}"
+    norm = [(raw, raw.lower().replace(" ", "").replace("_", "").replace("\\u002f", "/")) for raw in found]
+    for raw, v in norm:
         if any(k in v for k in SCHEMA_IN):
-            return IN, f"schema: {raw}"
+            return IN, "shop data: In stock"
+    for raw, v in norm:
+        if any(k in v for k in SCHEMA_OUT):
+            return OUT, "shop data: Out of stock"
     return None, ""
+
+
+def _short_texts(soup, tags=("button", "a", "li", "div", "span", "input", "p")):
+    """Texts of small elements (labels and buttons) - never the whole page, so words in reviews,
+    'similar products' or other sizes don't count."""
+    out = []
+    for el in soup.find_all(list(tags)):
+        if el.name == "input":
+            t = (el.get("value") or "").strip()
+        else:
+            if el.find(["div", "li", "ul", "section"]):        # skip big containers
+                continue
+            t = text_of(el)
+        if t and len(t) <= 40:
+            disabled = el.has_attr("disabled") or str(el.get("aria-disabled", "")).lower() == "true"
+            out.append((t.lower(), disabled))
+    return out
+
+
+def _buy_button(texts):
+    for t, disabled in texts:
+        if not disabled and (t in IN_LABELS or t.startswith("buy now") or t.startswith("add to cart")):
+            return t
+    return None
+
+
+def _out_label(texts):
+    for t, _ in texts:
+        if t in OUT_LABELS or t.startswith("this item is currently out of stock") or t.startswith("sold out"):
+            return t
+    return None
 
 
 def check_amazon(soup):
     avail = text_of(soup.select_one("#availability")) or text_of(soup.select_one("#outOfStock"))
     a = avail.lower()
     if any(w in a for w in ["currently unavailable", "out of stock", "unavailable"]):
-        return OUT, avail
+        return OUT, f"Amazon says: {avail[:60]}"
     if soup.select_one("#add-to-cart-button, #buy-now-button, input[name='submit.add-to-cart']"):
-        return IN, avail or "Add to Cart button present"
+        return IN, "Amazon: Add to Cart button" + (f" ({avail[:40]})" if avail else "")
     if "in stock" in a or "left in stock" in a or "usually dispatched" in a:
-        return IN, avail
-    if soup.select_one("#outOfStock, #unqualifiedBuyBox"):
-        return OUT, avail or "no buy box"
+        return IN, f"Amazon says: {avail[:60]}"
+    if soup.select_one("#outOfStock"):
+        return OUT, "Amazon: out-of-stock box"
     return None, avail
 
 
 def check_flipkart(soup):
-    body = soup.get_text(" ", strip=True).lower()
-    for w in ["sold out", "currently unavailable", "coming soon", "this item is currently out of stock"]:
-        if w in body:
-            return OUT, w
-    for b in soup.find_all(["button", "li", "div"]):
-        t = text_of(b).lower()
-        if t in ("add to cart", "buy now", "buy now at", "go to cart") or t.startswith("buy now"):
-            return IN, f"'{text_of(b)}' button"
+    texts = _short_texts(soup)
+    b = _buy_button(texts)
+    if b:
+        return IN, f"Flipkart: '{b.title()}' button"
+    lab = _out_label(texts)
+    if lab:
+        return OUT, f"Flipkart shows '{lab.title()}'"
     return None, ""
 
 
 def check_generic(soup):
-    buttons = " | ".join(text_of(b).lower() for b in soup.find_all(["button", "a", "input"])[:600]
-                         if len(text_of(b)) < 40) + " " + " ".join(
-        (i.get("value") or "").lower() for i in soup.find_all("input"))
-    page = soup.get_text(" ", strip=True).lower()[:60000]
-    for w in OUT_WORDS:
-        if w in page and not any(iw in buttons for iw in IN_WORDS[:4]):
-            return OUT, w
-    for w in IN_WORDS:
-        if w in buttons:
-            return IN, f"'{w}' button"
+    texts = _short_texts(soup)
+    b = _buy_button(texts)
+    if b:
+        return IN, f"'{b.title()}' button"
+    lab = _out_label(texts)
+    if lab:
+        return OUT, f"page shows '{lab.title()}'"
     return None, ""
 
 
-def check_product(product, settings):
-    url = product["url"]
-    site = site_name(url)
-    html, err = fetch_html(url, settings)
-    if err or not html:
-        return {"status": UNKNOWN, "price": "", "detail": err or "no page", "site": site}
+def analyse_html(product, html, site):
     soup = BeautifulSoup(html, "html.parser")
     title = text_of(soup.select_one("#productTitle")) or text_of(soup.select_one("h1")) or \
         (soup.title.string.strip() if soup.title and soup.title.string else "")
@@ -323,18 +383,56 @@ def check_product(product, settings):
         status, detail = check_amazon(soup)
     elif site == "Flipkart":
         status, detail = check_flipkart(soup)
+        if status != IN:                                   # Flipkart's own product data beats a stray label
+            s2, d2 = schema_availability(soup)
+            if s2:
+                detail = d2 + (f"; page also shows {detail.split(' shows ')[-1]}" if status else "")
+                status = s2
     if not status:
         status, detail = schema_availability(soup)
     if not status:
         status, detail = check_generic(soup)
-    # extra rule: "must contain" / "must not contain" text the user can set per product
     page = soup.get_text(" ", strip=True).lower()
     if product.get("in_stock_text") and product["in_stock_text"].lower() in page:
-        status, detail = IN, f"found '{product['in_stock_text']}'"
+        status, detail = IN, f"found your text '{product['in_stock_text']}'"
     if product.get("out_of_stock_text") and product["out_of_stock_text"].lower() in page:
-        status, detail = OUT, f"found '{product['out_of_stock_text']}'"
-    return {"status": status or UNKNOWN, "price": find_price(soup, html), "detail": detail or err or "could not decide",
-            "site": site, "title": title[:150], "image": find_image(soup)}
+        status, detail = OUT, f"found your text '{product['out_of_stock_text']}'"
+    return {"status": status, "detail": detail, "price": find_price(soup, html), "title": title[:150],
+            "image": find_image(soup)}
+
+
+def check_product(product, settings, force_browser=False):
+    """Check one product. A quick download first; then, for anything that isn't a clear 'in stock'
+    (or when asked), a real Chrome browser - shops sometimes send automated downloads a different,
+    'Notify me' version of the page, but a real browser gets the page you see."""
+    url = canonical_url(product["url"])
+    site = site_name(product["url"])
+    mode = settings.get("use_browser", "auto")             # auto | always | never
+    res, errs = None, []
+    if mode != "always" and not force_browser:
+        html, err = fetch_plain(url)
+        if html:
+            res = analyse_html(product, html, site)
+            res["via"] = "quick check"
+        else:
+            errs.append(err)
+    need_browser = mode != "never" and (force_browser or mode == "always" or not res or res["status"] != IN)
+    if need_browser:
+        html, err = fetch_with_browser(url)
+        if html:
+            b = analyse_html(product, html, site)
+            if b["status"] or not res:
+                b["via"] = "real browser"
+                res = b
+        else:
+            errs.append(err)
+    if not res or not res["status"]:
+        detail = (res or {}).get("detail") or "; ".join(e for e in errs if e) or "could not read the page"
+        return {"status": UNKNOWN, "price": (res or {}).get("price", ""), "detail": detail, "site": site,
+                "title": (res or {}).get("title", ""), "image": (res or {}).get("image", "")}
+    res["site"] = site
+    res["detail"] = f"{res['detail']} ({res['via']})"
+    return res
 
 
 def find_image(soup):
@@ -997,7 +1095,24 @@ def _check_all(cfg, send, products):
     with ThreadPoolExecutor(max_workers=min(6, len(groups))) as ex:
         results = [r for chunk in ex.map(lambda g: _check_site_group(g, s), groups.values()) for r in chunk]
 
+    # Confirm every change of status with a second, real-browser check before believing it,
+    # so one odd page can never trigger a wrong "out of stock" / "back in stock".
     state = load_state()
+    confirmed = []
+    for p, res in results:
+        old = state.get(p["url"], {}).get("status")
+        if old in (IN, OUT) and res["status"] in (IN, OUT) and res["status"] != old and s.get("use_browser", "auto") != "never":
+            PROGRESS["current"] = "Double-checking " + (p.get("name") or p["url"])
+            second = check_product(p, s, force_browser=True)
+            if second["status"] == res["status"]:
+                res = second
+                res["detail"] += " - confirmed twice"
+            elif second["status"] in (IN, OUT):
+                res = second            # the real browser disagreed with the quick check: trust the browser
+            else:
+                res = dict(res, status=UNKNOWN, detail=f"not confirmed ({res['detail']})")
+        confirmed.append((p, res))
+    results = confirmed
     alerts = []
     for p, res in results:
         t = now(cfg)
@@ -1019,6 +1134,7 @@ def _check_all(cfg, send, products):
         when = t.strftime("%d %b %Y, %I:%M:%S %p")
         base = {"product": name, "site": res["site"], "price": res["price"] or prev.get("price", ""),
                 "url": p["url"], "image": entry.get("image", ""), "when": when}
+        entry["last_ok"] = res["status"] != UNKNOWN
         if res["status"] == UNKNOWN:
             entry["fails"] = prev.get("fails", 0) + 1
             if entry["fails"] == int(s.get("alert_after_failures", 6)) and send:
@@ -1375,6 +1491,7 @@ def api_state():
                          "price": s.get("price", ""), "last_checked": s.get("last_checked", ""),
                          "target": p.get("target_price"), "detail": s.get("detail", ""), "image": s.get("image", ""),
                          "fails": s.get("fails", 0), "active": p.get("active", True), "history": hist.get(p["url"], []),
+                         "last_ok": s.get("last_ok", True),
                          "due_in": due_in})
     n = cfg["notifications"]
     channels = [k for k in CHANNELS if (n.get(k) or ({"enabled": True} if k == "desktop" else {})).get("enabled")]
@@ -2022,6 +2139,14 @@ def run_web(port, host=None):
                     st_ = load_state()
                     st_.setdefault(gone[0]["url"], {})["name"] = gone[0]["name"]
                     save_state(st_)
+            elif self.path == "/api/check-one":
+                prod = [p for p in cfg["products"] if p["url"] == body.get("url")]
+                if not prod:
+                    return self.send({"error": "Product not found"}, code=400)
+                if PROGRESS["running"]:
+                    return self.send({"error": "A check is running - try again in a moment"}, code=400)
+                threading.Thread(target=check_all, args=(cfg,), kwargs={"products": prod}, daemon=True).start()
+                return self.send({"ok": True})
             elif self.path == "/api/check":
                 if PROGRESS["running"]:
                     return self.send({"ok": True, "already": True})
