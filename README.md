@@ -108,6 +108,22 @@ enter your Gmail + that 16-letter password. Alerts arrive with the Excel and PDF
 
 **PC pop-up** – on by default. **ntfy** – free phone push app; pick a topic name only you know.
 
+## How it decides "in stock" (and why it doesn't get fooled)
+
+1. It opens the **plain product page** (tracking parts of your link are dropped: Amazon → `/dp/<code>`, Flipkart → `?pid=` only).
+2. It looks for real **Add to cart / Buy now** buttons and the shop's own product data ("InStock" / "OutOfStock").
+   Words like "Notify me" or "Sold out" only count when they are a button or label – not when they appear next to
+   *other* products, sizes or reviews on the same page.
+3. Shops sometimes send automated downloads a different "Notify me" version of the page. So anything that doesn't
+   clearly say **in stock** is re-checked in a **real Chrome browser** (the same page you see), and the browser wins.
+4. Every change (in → out, out → in) is **checked twice** before you get an alert, so one odd page can't cause a wrong alert.
+5. If a page can't be read (robot check), the product shows **"Couldn't check it just now – last known status"**
+   instead of a wrong status, and it keeps trying.
+
+Each product card shows **Why:** – what was found and when (e.g. "Flipkart: 'Add To Cart' button (real browser) –
+confirmed twice · checked 1 min ago"). Use ••• → **Check this product now** any time.
+If a site uses unusual wording, add to that product in `config.yaml`: `in_stock_text: "Add to Bag"` or `out_of_stock_text: "Notify Me"`.
+
 ## Reports – item wise
 
 Every report is organised **product by product**, so you can read one item's story at a glance:
