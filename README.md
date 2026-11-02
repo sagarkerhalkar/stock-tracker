@@ -157,6 +157,13 @@ Each product card shows **Why:** – what was found and when (e.g. "Flipkart: 'A
 confirmed twice · checked 1 min ago"). Use ••• → **Check this product now** any time.
 If a site uses unusual wording, add to that product in `config.yaml`: `in_stock_text: "Add to Bag"` or `out_of_stock_text: "Notify Me"`.
 
+## Why "Open" may look different from the link you pasted
+
+A Flipkart link copied from the app often contains `lid=…`, which locks the page to **one seller**. If that seller runs
+out, the page says "Notify Me" even though **other sellers still sell it**. Restock Watch checks the product itself
+(any seller) – and every **Open** button, report link and WhatsApp link now opens that same plain product page, so what
+you see always matches what Restock Watch says.
+
 ## Reports – item wise
 
 Every report is organised **product by product**, so you can read one item's story at a glance:

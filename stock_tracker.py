@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 15
+APP_VERSION = 16
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -920,7 +920,8 @@ def product_timelines(cfg, events=None, state=None, include_removed=False, only=
             secs[per["status"]] += per["secs"]
         tracked = secs[IN] + secs[OUT]
         out.append({
-            "name": name, "url": url, "site": site_name(url) if url.startswith("http") else "",
+            "name": name, "url": url, "link": share_link(url) if url.startswith("http") else url,
+            "site": site_name(url) if url.startswith("http") else "",
             "image": s.get("image", ""), "removed": removed, "price": s.get("price", ""),
             "status": s.get("status") or (periods[-1]["status"] if periods else "NOT CHECKED"),
             "since": s.get("since") or (periods[-1]["start"] if periods else ""),
@@ -1070,7 +1071,7 @@ def build_excel(cfg, items, checks, path=None):
         ws.cell(r, 3).font = Font(bold=True)
         ws.cell(r, 13, " ".join(it.get("insights", [])[1:])).alignment = Alignment(wrap_text=True, vertical="top")
         if it["url"].startswith("http"):
-            ws.cell(r, 12).hyperlink = it["url"]
+            ws.cell(r, 12).hyperlink = it["link"]
             ws.cell(r, 12).value = "Open"
             ws.cell(r, 12).font = Font(color="1D6FE0", underline="single")
     for i, w in enumerate([46, 14, 16, 22, 12, 12, 12, 14, 14, 12, 22, 8, 70], 1):
@@ -1735,7 +1736,8 @@ def api_state():
         due_in = None
         if s.get("last_ts"):
             due_in = max(0, int(s["last_ts"] + interval_for(cfg, s.get("status")) - time.time()))
-        products.append({"name": p.get("name") or s.get("title") or "", "url": p["url"], "site": site_name(p["url"]),
+        products.append({"name": p.get("name") or s.get("title") or "", "url": p["url"], "link": share_link(p["url"]),
+                         "site": site_name(p["url"]),
                          "status": s.get("status", "NOT CHECKED"), "since": s.get("since", ""),
                          "price": s.get("price", ""), "last_checked": s.get("last_checked", ""),
                          "target": p.get("target_price"), "detail": s.get("detail", ""), "image": s.get("image", ""),
@@ -1746,7 +1748,7 @@ def api_state():
     channels = [k for k in CHANNELS if (n.get(k) or ({"enabled": True} if k == "desktop" else {})).get("enabled")]
     nxt = PROGRESS.get("next_check")
     active = {p["url"] for p in cfg["products"]}
-    events = [e for e in reversed(read_csv(EVENTS_CSV)[-400:]) if e.get("url") in active][:80]
+    events = [dict(e, link=share_link(e["url"])) for e in reversed(read_csv(EVENTS_CSV)[-400:]) if e.get("url") in active][:80]
     today = now(cfg).strftime("%Y-%m-%d")
     return {"app": "restock-watch", "version": APP_VERSION, "folder": BASE, "other_copies": OTHER_COPIES,
             "latest_version": UPDATE["latest"], "update_status": UPDATE["status"],

@@ -472,7 +472,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 15;
+const APP_VERSION = 16;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -560,7 +560,7 @@ function card(p, i, enter){
   const c = cls(p.status);
   const label = !p.active ? "Paused" : c === "in" ? "Available" : c === "out" ? "Out of stock" : p.status === "NOT CHECKED" ? "Checking…" : "Can't read page";
   const img = /^https?:\/\//.test(p.image) ? `<img src="${esc(p.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'ph',textContent:'${esc(p.site[0]||"?")}'}))">` : `<span class="ph">${esc((p.site||"?")[0])}</span>`;
-  const href = /^https?:\/\//.test(p.url) ? esc(p.url) : "#";
+  const href = /^https?:\/\//.test(p.link || p.url) ? esc(p.link || p.url) : "#";   // the same plain link the tracker checks
   return `<article class="card ${p.active ? "" : "paused"} ${enter ? "enter" : ""}" data-url="${esc(p.url)}" style="--i:${i}">
     <div class="head"><div class="thumb">${img}</div>
       <div class="meta"><div class="row"><span class="site">${esc(p.site)}</span><span class="badge ${p.active ? c : ""}"><i></i>${label}</span></div>
@@ -736,7 +736,7 @@ function announce(e){
   const b = document.createElement("div"); b.className = "banner " + (inS ? "in" : "out");
   const img = /^https?:\/\//.test(p.image) ? `<img src="${esc(p.image)}" alt="" referrerpolicy="no-referrer" onerror="this.style.visibility='hidden'">` : `<span class="ph"></span>`;
   b.innerHTML = `${img}<div class="grow"><div class="t">${label}</div><div class="s">${esc(e.product)} · ${esc(e.site)}${e.price ? " · " + esc(e.price) : ""} · ${nice(e.date+" "+e.time)}</div></div>
-    ${inS ? `<a class="btn primary small" href="${/^https?:\/\//.test(e.url) ? esc(e.url) : "#"}" target="_blank" rel="noopener">Open on ${esc(e.site)}</a>` : ""}<button class="x" aria-label="Dismiss">×</button>`;
+    ${inS ? `<a class="btn primary small" href="${/^https?:\/\//.test(e.link || e.url) ? esc(e.link || e.url) : "#"}" target="_blank" rel="noopener">Open on ${esc(e.site)}</a>` : ""}<button class="x" aria-label="Dismiss">×</button>`;
   b.querySelector(".x").onclick = () => b.remove();
   $("#banners").prepend(b);
   const card = document.querySelector(`.card[data-url="${CSS.escape(e.url)}"]`);
