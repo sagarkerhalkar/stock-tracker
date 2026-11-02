@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 17
+APP_VERSION = 18
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",

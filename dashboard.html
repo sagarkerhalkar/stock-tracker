@@ -472,7 +472,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 16;
+const APP_VERSION = 18;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -515,7 +515,10 @@ async function load(){
     versionUI();
   } catch (e) { $("#liveText").textContent = "Restock Watch has stopped. Start it again with 2_START.bat"; $("#live").classList.remove("busy"); setTimeout(load, 3000); return; }
   if ((S.version || 0) < APP_VERSION){ outdated(); setTimeout(load, 5000); return; }
-  if ((S.version || 0) > APP_VERSION){ location.reload(); return; }       // the app was updated: load the new page
+  if ((S.version || 0) > APP_VERSION){                                     // the app was updated: load the new page once
+    let tried = ""; try { tried = sessionStorage.getItem("rw-reloaded-for") || ""; } catch (e) {}
+    if (tried !== String(S.version)){ try { sessionStorage.setItem("rw-reloaded-for", String(S.version)); } catch (e) {} location.reload(); return; }
+  }
   $("#outdated")?.remove();
   try {
     clockOffset = Date.now() - parseT(S.now);
