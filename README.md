@@ -55,6 +55,15 @@ full history are added; nothing here is deleted; a backup goes to `backup\` firs
 **Run only one copy.** Two copies from two folders each keep their own products and history. If that happens the
 dashboard shows "Two copies of Restock Watch are running" with both folder paths.
 
+## Send the current stock to anyone, any time
+
+- **Products → Send stock update**: pick *All / Only available / Only out of stock*, type the WhatsApp number(s)
+  (prefilled with your saved ones), tick how to send (WhatsApp, Telegram, email… whatever you've set up), check the
+  preview and press **Send now**. Each product is listed with ✅/⛔, price, site, since when, and its link.
+- One product only: on its card **••• → Send this product's status**.
+- Automatic alerts don't need anything: whenever a product **comes back in stock** or **goes out of stock** (confirmed
+  twice), a message goes to every alert app that is switched on, to the numbers saved on the Alerts page.
+
 ## How fast will I know?
 
 | Product is… | Checked every (default) | Why |

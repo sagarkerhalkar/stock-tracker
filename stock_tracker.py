@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 13
+APP_VERSION = 14
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -1377,6 +1377,57 @@ def daily_summary(cfg):
     return notify_all(cfg, "📊 Daily stock summary", "\n".join(lines) or "No products", attach=[xlsx, pdf])
 
 
+def status_message(cfg, urls=None, which="all"):
+    """Current stock of your products as one message, e.g. for WhatsApp."""
+    state, t = load_state(), now(cfg)
+    rows = []
+    for p in cfg["products"]:
+        if urls and p["url"] not in urls:
+            continue
+        s = state.get(p["url"], {})
+        st_ = s.get("status")
+        if which == "in" and st_ != IN or which == "out" and st_ != OUT:
+            continue
+        name = p.get("name") or s.get("title") or "Product"
+        icon, word = ("✅", "Available") if st_ == IN else ("⛔", "Out of stock") if st_ == OUT else ("⚪", "Not checked yet")
+        since = ""
+        if s.get("since"):
+            try:
+                since = datetime.strptime(s["since"], TS_FMT).strftime("since %d %b, %I:%M %p")
+            except ValueError:
+                pass
+        line2 = " · ".join(x for x in (s.get("price", ""), site_name(p["url"]), since) if x)
+        rows.append(f"{icon} *{name}* – {word}\n{line2}\n{canonical_url(p['url'])}")
+    if not rows:
+        raise ValueError("No products to send" + ({"in": " - nothing is available right now",
+                                                    "out": " - nothing is out of stock right now"}.get(which, "")))
+    head = f"📦 Stock update – {t.strftime('%d %b, %I:%M %p')}"
+    n_in = sum(1 for r in rows if r.startswith("✅"))
+    return head, f"{n_in} of {len(rows)} available\n\n" + "\n\n".join(rows)
+
+
+def send_status(cfg, urls=None, which="all", to=None, channels=None):
+    """Send the current stock right now. `to` = WhatsApp numbers for this message (else your saved ones)."""
+    import copy
+    head, body = status_message(cfg, urls, which)
+    c = copy.deepcopy(cfg)
+    wa = c["notifications"].setdefault("whatsapp", {})
+    if to:
+        nums = [x.strip() for x in str(to).split(",") if x.strip()]
+        wa.update(to=nums, enabled=True)
+        if wa.get("provider") != "web" and (WA.state == "ready" or os.path.isdir(WA_PROFILE)):
+            wa["provider"] = "web"
+    chans = channels or [k for k in CHANNELS if k != "desktop" and (c["notifications"].get(k) or {}).get("enabled")]
+    if not chans:
+        raise ValueError("Choose where to send it (e.g. WhatsApp) or set up an alert app first")
+    sent, errors = [], {}
+    for ch in chans:
+        s_, e_ = notify_all(c, head, body, only=ch)
+        sent += s_
+        errors.update(e_)
+    return {"sent": sent, "errors": errors, "preview": head + "\n\n" + body}
+
+
 def due_products(cfg, force=False):
     state, t = load_state(), time.time()
     due, next_at = [], None
@@ -2320,6 +2371,21 @@ def run_web(port, host=None):
                     st_ = load_state()
                     st_.setdefault(gone[0]["url"], {})["name"] = gone[0]["name"]
                     save_state(st_)
+            elif self.path == "/api/send-status":
+                try:
+                    r = send_status(cfg, body.get("urls") or None, body.get("which", "all"),
+                                    (body.get("to") or "").strip() or None, body.get("channels") or None)
+                except ValueError as e:
+                    return self.send({"error": str(e)}, code=400)
+                if not r["sent"]:
+                    return self.send({"error": "; ".join(f"{k}: {v}" for k, v in r["errors"].items()) or "Nothing sent"}, code=400)
+                return self.send(dict(r, ok=True))
+            elif self.path == "/api/status-preview":
+                try:
+                    head, body_ = status_message(cfg, body.get("urls") or None, body.get("which", "all"))
+                except ValueError as e:
+                    return self.send({"error": str(e)}, code=400)
+                return self.send({"ok": True, "preview": head + "\n\n" + body_})
             elif self.path == "/api/whatsapp/link":
                 WA.start()
                 return self.send({"ok": True})

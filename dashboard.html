@@ -300,6 +300,17 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 .wa-qr .wa-ok{color:#0F9D58;font-size:64px;font-weight:800}
 .wa-info{flex:1;min-width:200px}
 
+
+/* ---------- send stock update ---------- */
+.overlay{position:fixed;inset:0;background:rgba(10,15,30,.55);display:grid;place-items:center;z-index:60;padding:16px}
+.sheet{background:var(--surface);border-radius:18px;padding:22px;width:min(640px,100%);max-height:calc(100vh - 32px);overflow:auto;box-shadow:var(--lift);animation:drop .25s ease-out}
+.sheet h2{margin:0 0 4px;font-size:18px}
+.sgrid{display:grid;grid-template-columns:200px 1fr;gap:12px}
+@media (max-width:640px){.sgrid{grid-template-columns:1fr}}
+.lbl{display:grid;gap:6px;font-size:13px;font-weight:700}
+.schans{display:flex;flex-wrap:wrap;gap:8px 16px}
+.preview{margin:0;background:var(--canvas);border:1px solid var(--line);border-radius:10px;padding:12px;font:500 13px/1.5 var(--font);white-space:pre-wrap;max-height:260px;overflow:auto}
+
 /* ---------- toast ---------- */
 .toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(360px,calc(100vw - 36px))}
 .toast{background:var(--ink);color:var(--surface);padding:11px 14px;border-radius:12px;box-shadow:var(--lift);font-weight:600;animation:drop .3s ease-out}
@@ -340,6 +351,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
       <h1>Products</h1>
       <div class="live" id="live" role="status"><i></i><span id="liveText">Connecting…</span></div>
       <button class="btn" id="soundBtn" aria-pressed="false">Turn on browser alerts</button>
+      <button class="btn" id="sendBtn">Send stock update</button>
       <button class="btn primary" id="checkBtn">Check now</button>
     </div>
     <div class="netline" id="netline" hidden></div>
@@ -436,12 +448,27 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
   </section>
 </main>
 <div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="overlay" id="sendDlg" hidden role="dialog" aria-modal="true" aria-labelledby="sendTitle">
+  <div class="sheet">
+    <h2 id="sendTitle">Send stock update</h2>
+    <p class="rnote" style="margin:0 0 14px">Sends the current status of your products right now. Automatic alerts (back in stock / out of stock) keep going as usual.</p>
+    <div class="sgrid">
+      <label class="lbl">Products
+        <select class="field" id="sWhich"><option value="all">All products</option><option value="in">Only available</option><option value="out">Only out of stock</option><option value="one" hidden>This product</option></select></label>
+      <label class="lbl">WhatsApp numbers <span class="rnote" style="margin:0">(with +91, comma between numbers)</span>
+        <input class="field" id="sTo" placeholder="+919876543210" autocomplete="off"></label>
+    </div>
+    <div class="lbl" style="margin-top:12px">Send by <div class="schans" id="sChans"></div></div>
+    <div class="lbl" style="margin-top:12px">Preview <pre class="preview" id="sPrev">…</pre></div>
+    <div class="actions" style="margin-top:14px"><button class="btn primary" id="sGo">Send now</button><button class="btn" id="sCancel">Cancel</button><span class="result" id="sRes"></span></div>
+  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 13;
+const APP_VERSION = 14;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -543,6 +570,7 @@ function card(p, i, enter){
         <div class="menu-list" role="menu">
           <button data-act="target">Set price alert</button>
           <button data-act="rename">Rename</button>
+          <button data-act="sendone">Send this product's status</button>
           <button data-act="checkone">Check this product now</button>
           <button data-act="download">Download history (Excel)</button>
           <button data-act="pause">${p.active ? "Pause watching" : "Resume watching"}</button>
@@ -760,6 +788,7 @@ $("#grid").addEventListener("click", async ev => {
   const url = a.closest(".card").dataset.url, p = S.products.find(x => x.url === url);
   a.closest(".menu-list").classList.remove("open");
   if (a.dataset.act === "download"){ location.href = dlLink([url], "xlsx"); return; }
+  if (a.dataset.act === "sendone"){ openSend([url]); return; }
   if (a.dataset.act === "checkone"){ const r = await post("/api/check-one", {url}); toast(r.ok ? "Checking it now – takes up to a minute (it double-checks in a real browser)" : r.error); setTimeout(load, 1500); return; }
   if (a.dataset.act === "remove"){ if (!confirm(`Stop watching "${p.name || url}"?\n\nIts history will be hidden from reports. You can still see it with "Show removed products" on the Reports page.`)) return;
     await post("/api/remove", {url}); toast("Removed – its history is hidden"); repSig = ""; }
@@ -962,6 +991,46 @@ async function findOld(boxSel, manual){
   };
 }
 $("#findOld").onclick = () => findOld("#restore2", true);
+
+
+/* ---------- send stock update now ---------- */
+let sendUrls = null;
+async function openSend(urls){
+  sendUrls = urls || null;
+  const opt = $("#sWhich").querySelector("option[value=one]"); opt.hidden = !sendUrls; $("#sWhich").value = sendUrls ? "one" : "all";
+  $("#sRes").textContent = ""; $("#sendDlg").hidden = false;
+  const [st, wa] = await Promise.all([fetch("/api/settings").then(r => r.json()), fetch("/api/whatsapp/status").then(r => r.json()).catch(() => ({}))]);
+  const w = st.channels.whatsapp || {};
+  $("#sTo").value = w.to || "";
+  const waOk = wa.state === "ready" || wa.linked_before || (w.enabled && w.provider === "callmebot" && w.phone);
+  const list = [["whatsapp", "WhatsApp" + (wa.state === "ready" ? "" : wa.linked_before ? " (reconnecting)" : waOk ? "" : " (not linked)"), true]]
+    .concat(["telegram", "email", "google_chat", "ntfy"].filter(k => (st.channels[k] || {}).enabled).map(k => [k, CH_NAMES[k], false]));
+  $("#sChans").innerHTML = list.map(([k, n, on]) => `<label class="chk"><input type="checkbox" value="${k}" ${on ? "checked" : ""}> ${esc(n)}</label>`).join("");
+  sendPreview();
+}
+async function sendPreview(){
+  const which = $("#sWhich").value;
+  const r = await post("/api/status-preview", {urls: which === "one" ? sendUrls : null, which: which === "one" ? "all" : which});
+  $("#sPrev").textContent = r.ok ? r.preview : r.error;
+}
+$("#sendBtn").onclick = () => openSend(null);
+$("#sWhich").onchange = sendPreview;
+$("#sCancel").onclick = () => { $("#sendDlg").hidden = true; };
+$("#sendDlg").addEventListener("click", e => { if (e.target.id === "sendDlg") $("#sendDlg").hidden = true; });
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("#sendDlg").hidden = true; });
+$("#sGo").onclick = async () => {
+  const which = $("#sWhich").value, chans = [...document.querySelectorAll("#sChans input:checked")].map(i => i.value);
+  if (!chans.length){ $("#sRes").textContent = "Tick at least one way to send"; $("#sRes").className = "result err"; return; }
+  if (chans.includes("whatsapp") && !$("#sTo").value.trim()){ $("#sRes").textContent = "Enter a WhatsApp number"; $("#sRes").className = "result err"; return; }
+  $("#sGo").disabled = true; $("#sRes").textContent = "Sending… (WhatsApp takes about 15 seconds per number)"; $("#sRes").className = "result ok";
+  const r = await post("/api/send-status", {urls: which === "one" ? sendUrls : null, which: which === "one" ? "all" : which, to: $("#sTo").value, channels: chans});
+  $("#sGo").disabled = false;
+  if (!r.ok){ $("#sRes").textContent = r.error; $("#sRes").className = "result err"; return; }
+  const errs = Object.entries(r.errors || {}).map(([k, v]) => `${CH_NAMES[k] || k}: ${v}`).join("; ");
+  $("#sRes").textContent = "Sent by " + r.sent.map(k => CH_NAMES[k] || k).join(", ") + (errs ? ` – but ${errs}` : "");
+  $("#sRes").className = "result " + (errs ? "err" : "ok");
+  if (!errs) setTimeout(() => { $("#sendDlg").hidden = true; toast("Stock update sent"); }, 1500);
+};
 
 window.addEventListener("hashchange", () => go(location.hash.slice(1).replace(/[^a-z]/g, "") || "overview"));
 go((location.hash || "#overview").slice(1).replace(/[^a-z]/g, "") || "overview");
