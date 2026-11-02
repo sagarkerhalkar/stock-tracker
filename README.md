@@ -55,14 +55,34 @@ full history are added; nothing here is deleted; a backup goes to `backup\` firs
 **Run only one copy.** Two copies from two folders each keep their own products and history. If that happens the
 dashboard shows "Two copies of Restock Watch are running" with both folder paths.
 
-## Send the current stock to anyone, any time
+## Send the stock on WhatsApp – any time
 
-- **Products → Send stock update**: pick *All / Only available / Only out of stock*, type the WhatsApp number(s)
-  (prefilled with your saved ones), tick how to send (WhatsApp, Telegram, email… whatever you've set up), check the
-  preview and press **Send now**. Each product is listed with ✅/⛔, price, site, since when, and its link.
-- One product only: on its card **••• → Send this product's status**.
-- Automatic alerts don't need anything: whenever a product **comes back in stock** or **goes out of stock** (confirmed
-  twice), a message goes to every alert app that is switched on, to the numbers saved on the Alerts page.
+- Press the green **📤 Send on WhatsApp** button (top of the Products page) → choose *All my products / Only what can be
+  bought / Only what is sold out* → type the number(s) → **📤 Send now**.
+- One product: press the green **📤 Send** on its card.
+- The message is short and simple:
+
+```
+🛒 Stock now – 2 Nov, 2:39 PM
+
+✅ English sample paper (Flipkart)
+   Can buy now – ₹365
+   👉 https://www.flipkart.com/product/p/itme9c42bf664b73?pid=9788168888876
+
+❌ Next Toppers CBSE Class 10 Sample Papers 2026-27 (Amazon)
+   Not available
+```
+
+Automatic alerts need nothing – they go to your saved numbers by themselves:
+
+```
+🟢 Back! You can buy it now              🔴 Sold out
+English sample paper (Flipkart)          English sample paper (Flipkart)
+💰 ₹365                                   It was there for 15 min.
+It was gone for 3h 12m.                  🕒 2 Nov, 2:40 PM
+👉 link
+🕒 2 Nov, 2:40 PM
+```
 
 ## How fast will I know?
 

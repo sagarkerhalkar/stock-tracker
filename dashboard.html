@@ -311,6 +311,10 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 .schans{display:flex;flex-wrap:wrap;gap:8px 16px}
 .preview{margin:0;background:var(--canvas);border:1px solid var(--line);border-radius:10px;padding:12px;font:500 13px/1.5 var(--font);white-space:pre-wrap;max-height:260px;overflow:auto}
 
+
+.btn.wa-btn{background:#25D366;border-color:#25D366;color:#fff}
+.btn.wa-btn:hover{background:#1fb855}
+
 /* ---------- toast ---------- */
 .toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(360px,calc(100vw - 36px))}
 .toast{background:var(--ink);color:var(--surface);padding:11px 14px;border-radius:12px;box-shadow:var(--lift);font-weight:600;animation:drop .3s ease-out}
@@ -351,7 +355,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
       <h1>Products</h1>
       <div class="live" id="live" role="status"><i></i><span id="liveText">Connecting…</span></div>
       <button class="btn" id="soundBtn" aria-pressed="false">Turn on browser alerts</button>
-      <button class="btn" id="sendBtn">Send stock update</button>
+      <button class="btn wa-btn" id="sendBtn">📤 Send on WhatsApp</button>
       <button class="btn primary" id="checkBtn">Check now</button>
     </div>
     <div class="netline" id="netline" hidden></div>
@@ -450,17 +454,17 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <div class="overlay" id="sendDlg" hidden role="dialog" aria-modal="true" aria-labelledby="sendTitle">
   <div class="sheet">
-    <h2 id="sendTitle">Send stock update</h2>
-    <p class="rnote" style="margin:0 0 14px">Sends the current status of your products right now. Automatic alerts (back in stock / out of stock) keep going as usual.</p>
+    <h2 id="sendTitle">📤 Send stock on WhatsApp</h2>
+    <p class="rnote" style="margin:0 0 14px">Tells people right now what they can buy and what is sold out.</p>
     <div class="sgrid">
-      <label class="lbl">Products
-        <select class="field" id="sWhich"><option value="all">All products</option><option value="in">Only available</option><option value="out">Only out of stock</option><option value="one" hidden>This product</option></select></label>
-      <label class="lbl">WhatsApp numbers <span class="rnote" style="margin:0">(with +91, comma between numbers)</span>
+      <label class="lbl">What to send
+        <select class="field" id="sWhich"><option value="all">All my products</option><option value="in">Only what can be bought</option><option value="out">Only what is sold out</option><option value="one" hidden>This product</option></select></label>
+      <label class="lbl">To <span class="rnote" style="margin:0">(WhatsApp numbers with +91 – put a comma between numbers)</span>
         <input class="field" id="sTo" placeholder="+919876543210" autocomplete="off"></label>
     </div>
+    <div class="lbl" style="margin-top:12px">The message will look like this <pre class="preview" id="sPrev">…</pre></div>
     <div class="lbl" style="margin-top:12px">Send by <div class="schans" id="sChans"></div></div>
-    <div class="lbl" style="margin-top:12px">Preview <pre class="preview" id="sPrev">…</pre></div>
-    <div class="actions" style="margin-top:14px"><button class="btn primary" id="sGo">Send now</button><button class="btn" id="sCancel">Cancel</button><span class="result" id="sRes"></span></div>
+    <div class="actions" style="margin-top:14px"><button class="btn primary wa-btn" id="sGo">📤 Send now</button><button class="btn" id="sCancel">Cancel</button><span class="result" id="sRes"></span></div>
   </div>
 </div>
 
@@ -468,7 +472,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 14;
+const APP_VERSION = 15;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -511,6 +515,7 @@ async function load(){
     versionUI();
   } catch (e) { $("#liveText").textContent = "Restock Watch has stopped. Start it again with 2_START.bat"; $("#live").classList.remove("busy"); setTimeout(load, 3000); return; }
   if ((S.version || 0) < APP_VERSION){ outdated(); setTimeout(load, 5000); return; }
+  if ((S.version || 0) > APP_VERSION){ location.reload(); return; }       // the app was updated: load the new page
   $("#outdated")?.remove();
   try {
     clockOffset = Date.now() - parseT(S.now);
@@ -565,12 +570,12 @@ function card(p, i, enter){
     ${p.active && p.last_ok === false && (c === "in" || c === "out") ? `<p class="warnline">Couldn't check it just now – this is the last known status. It keeps trying${p.fails >= 2 ? ` (${p.fails} tries failed)` : ""}.</p>` : ""}
     ${p.detail ? `<p class="why">Why: ${esc(p.detail)}${p.last_checked ? ` · checked ${esc(since(p.last_checked))} ago` : ""}</p>` : ""}
     <div class="foot"><span class="next num" data-next></span>
+      <button class="btn small wa-btn" data-act="sendone" title="Send this product on WhatsApp">📤 Send</button>
       <a class="btn small" href="${href}" target="_blank" rel="noopener">Open</a>
       <div class="menu"><button class="btn small" data-menu aria-haspopup="true" aria-label="More actions">•••</button>
         <div class="menu-list" role="menu">
           <button data-act="target">Set price alert</button>
           <button data-act="rename">Rename</button>
-          <button data-act="sendone">Send this product's status</button>
           <button data-act="checkone">Check this product now</button>
           <button data-act="download">Download history (Excel)</button>
           <button data-act="pause">${p.active ? "Pause watching" : "Resume watching"}</button>
@@ -786,7 +791,7 @@ $("#grid").addEventListener("click", async ev => {
   if (menuBtn){ menuBtn.nextElementSibling.classList.toggle("open"); return; }
   const a = ev.target.closest("[data-act]"); if (!a) return;
   const url = a.closest(".card").dataset.url, p = S.products.find(x => x.url === url);
-  a.closest(".menu-list").classList.remove("open");
+  a.closest(".menu-list")?.classList.remove("open");
   if (a.dataset.act === "download"){ location.href = dlLink([url], "xlsx"); return; }
   if (a.dataset.act === "sendone"){ openSend([url]); return; }
   if (a.dataset.act === "checkone"){ const r = await post("/api/check-one", {url}); toast(r.ok ? "Checking it now – takes up to a minute (it double-checks in a real browser)" : r.error); setTimeout(load, 1500); return; }
@@ -1003,7 +1008,7 @@ async function openSend(urls){
   const w = st.channels.whatsapp || {};
   $("#sTo").value = w.to || "";
   const waOk = wa.state === "ready" || wa.linked_before || (w.enabled && w.provider === "callmebot" && w.phone);
-  const list = [["whatsapp", "WhatsApp" + (wa.state === "ready" ? "" : wa.linked_before ? " (reconnecting)" : waOk ? "" : " (not linked)"), true]]
+  const list = [["whatsapp", "WhatsApp" + (wa.state === "ready" ? "" : wa.linked_before ? " (reconnecting)" : waOk ? "" : " – not linked yet (Alerts page)"), true]]
     .concat(["telegram", "email", "google_chat", "ntfy"].filter(k => (st.channels[k] || {}).enabled).map(k => [k, CH_NAMES[k], false]));
   $("#sChans").innerHTML = list.map(([k, n, on]) => `<label class="chk"><input type="checkbox" value="${k}" ${on ? "checked" : ""}> ${esc(n)}</label>`).join("");
   sendPreview();

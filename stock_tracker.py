@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 14
+APP_VERSION = 15
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -695,16 +695,16 @@ def send_telegram(c, subject, msg, alert, attach=None):
     api = f"https://api.telegram.org/bot{str(c['bot_token']).strip()}"
     chat = str(c["chat_id"]).strip()
     if alert.get("product"):
-        lines = [f"<b>{_html(subject)}</b>", "", f"<b>{_html(alert['product'])}</b>"]
-        if alert.get("price"):
+        buy = alert.get("buyable", True)
+        lines = [f"<b>{_html(subject)}</b>", f"{_html(short_name(alert['product']))} ({_html(alert.get('site', ''))})"]
+        if alert.get("price") and buy:
             lines.append(f"💰 {_html(alert['price'])}")
-        lines.append(f"🛒 {_html(alert.get('site', ''))}")
-        lines.append(f"🕒 {_html(alert.get('when', ''))}")
         if alert.get("previous"):
-            lines.append(f"<i>{_html(alert['previous'])}</i>")
+            lines.append(_html(alert["previous"]))
+        lines.append(f"🕒 {_html(alert.get('when_short') or alert.get('when', ''))}")
         text = "\n".join(lines)
-        markup = {"inline_keyboard": [[{"text": f"Open on {alert.get('site', 'site')}", "url": alert["url"]}]]} \
-            if alert.get("url") else None
+        markup = {"inline_keyboard": [[{"text": f"👉 Buy on {alert.get('site', 'site')}", "url": alert["url"]}]]} \
+            if alert.get("url") and buy else None
         if alert.get("image"):
             r = requests.post(f"{api}/sendPhoto", json={"chat_id": chat, "photo": alert["image"], "caption": text,
                                                          "parse_mode": "HTML", "reply_markup": markup}, timeout=25)
@@ -734,17 +734,31 @@ def telegram_find_chat(token):
     raise RuntimeError("No message found - open your bot in Telegram, press Start, send 'hi', then try again")
 
 
+def share_link(url):
+    """Shortest link that still opens the product: amazon.in/dp/CODE, flipkart.com/product/p/itm…?pid=…"""
+    u = canonical_url(url)
+    m = re.match(r"(https?://(?:www\.)?flipkart\.com)/[^/]+/p/(itm[0-9a-z]+)(\?pid=[A-Z0-9]+)?", u, re.I)
+    return f"{m.group(1)}/product/p/{m.group(2)}{m.group(3) or ''}" if m else u
+
+
+def short_name(name, limit=55):
+    """'Next Toppers CBSE Class 10 Sample Papers 2026-27 | Science, Maths ...' -> 'Next Toppers CBSE Class 10 Sample Papers 2026-27'"""
+    n = re.split(r"\s[|(\[]\s?|\s[-–]\s|,\s", str(name or "").strip())[0].strip() or str(name or "").strip()
+    return n if len(n) <= limit else n[:limit - 1].rstrip() + "…"
+
+
 def plain_text(subject, msg, alert, bold="*"):
+    """Short, simple message: what happened, which product, price, link."""
     if not alert.get("product"):
         return f"{bold}{subject}{bold}\n\n{msg}"
-    lines = [f"{bold}{subject}{bold}", "", f"{bold}{alert['product']}{bold}"]
-    if alert.get("price"):
+    lines = [f"{bold}{subject}{bold}", f"{short_name(alert['product'])} ({alert.get('site', '')})"]
+    if alert.get("price") and alert.get("buyable", True):
         lines.append(f"💰 {alert['price']}")
-    lines += [f"🛒 {alert.get('site', '')}", f"🕒 {alert.get('when', '')}"]
     if alert.get("previous"):
-        lines.append(f"_{alert['previous']}_" if bold == "*" else alert["previous"])
-    if alert.get("url"):
-        lines += ["", alert["url"]]
+        lines.append(alert["previous"])
+    if alert.get("url") and alert.get("buyable", True):
+        lines.append(f"👉 {alert['url']}")
+    lines.append(f"🕒 {alert.get('when_short') or alert.get('when', '')}")
     return "\n".join(lines)
 
 
@@ -775,14 +789,15 @@ def send_whatsapp(c, subject, msg, alert, attach=None):
 def send_google_chat(c, subject, msg, alert, attach=None):
     url = str(c["webhook_url"]).strip()
     if alert.get("product"):
-        widgets = [{"decoratedText": {"topLabel": "Product", "text": f"<b>{_html(alert['product'])}</b>", "wrapText": True}}]
-        if alert.get("price"):
-            widgets.append({"decoratedText": {"topLabel": "Price", "text": _html(alert["price"])}})
-        widgets.append({"decoratedText": {"topLabel": "When", "text": _html(alert.get("when", ""))}})
+        buy = alert.get("buyable", True)
+        widgets = [{"decoratedText": {"text": f"<b>{_html(short_name(alert['product']))}</b>", "wrapText": True}}]
+        if alert.get("price") and buy:
+            widgets.append({"decoratedText": {"text": "💰 " + _html(alert["price"])}})
         if alert.get("previous"):
-            widgets.append({"textParagraph": {"text": f"<i>{_html(alert['previous'])}</i>"}})
-        if alert.get("url"):
-            widgets.append({"buttonList": {"buttons": [{"text": f"Open on {alert.get('site', 'site')}",
+            widgets.append({"textParagraph": {"text": _html(alert["previous"])}})
+        widgets.append({"decoratedText": {"text": "🕒 " + _html(alert.get("when_short") or alert.get("when", ""))}})
+        if alert.get("url") and buy:
+            widgets.append({"buttonList": {"buttons": [{"text": f"👉 Buy on {alert.get('site', 'site')}",
                                                         "onClick": {"openLink": {"url": alert["url"]}}}]}})
         header = {"title": subject, "subtitle": alert.get("site", "")}
         if alert.get("image"):
@@ -1219,10 +1234,10 @@ FORCE = threading.Event()
 PROGRESS = {"running": False, "done": 0, "total": 0, "current": "", "next_check": None, "last_run": None}
 
 EVENT_TITLES = {
-    "FIRST CHECK - IN STOCK": "✅ AVAILABLE NOW",
-    "FIRST CHECK - OUT OF STOCK": "⛔ NOT AVAILABLE RIGHT NOW",
-    "WENT OUT OF STOCK": "🔴 WENT OUT OF STOCK",
-    "BACK IN STOCK": "🟢 BACK IN STOCK - available again!",
+    "FIRST CHECK - IN STOCK": "✅ You can buy it",
+    "FIRST CHECK - OUT OF STOCK": "❌ Not available now",
+    "WENT OUT OF STOCK": "🔴 Sold out",
+    "BACK IN STOCK": "🟢 Back! You can buy it now",
 }
 
 
@@ -1312,7 +1327,9 @@ def _check_all(cfg, send, products):
             entry["price"] = res["price"]
         when = t.strftime("%d %b %Y, %I:%M:%S %p")
         base = {"product": name, "site": res["site"], "price": res["price"] or prev.get("price", ""),
-                "url": p["url"], "image": entry.get("image", ""), "when": when}
+                "url": share_link(p["url"]), "image": entry.get("image", ""), "when": when,
+                "when_short": t.strftime("%d %b, %I:%M %p").lstrip("0").replace(" 0", " "),
+                "buyable": res["status"] == IN}
         entry["last_ok"] = res["status"] != UNKNOWN
         if res["status"] == UNKNOWN:
             entry["fails"] = prev.get("fails", 0) + 1
@@ -1333,13 +1350,13 @@ def _check_all(cfg, send, products):
                     if old and prev.get("since"):
                         dur = fmt_dur(time.time() - datetime.strptime(prev["since"], "%Y-%m-%d %H:%M:%S")
                                       .replace(tzinfo=tz(cfg)).timestamp())
-                        previous = f"Was {'out of stock' if old == OUT else 'available'} for {dur}"
+                        previous = (f"It was gone for {dur}." if old == OUT else f"It was there for {dur}.")
                     alerts.append((EVENT_TITLES[event], dict(base, previous=previous)))
             target = p.get("target_price")
             pnum = to_num(res["price"])
             if target and pnum and pnum <= float(target) and res["status"] == IN and not prev.get("target_hit"):
                 entry["target_hit"] = True
-                alerts.append((f"💰 PRICE DROP - now {res['price']}", dict(base, previous=f"Your alert price: ₹{target:,.0f}")))
+                alerts.append((f"💰 Price went down to {res['price']}", dict(base, previous=f"You wanted ₹{target:,.0f} or less.")))
             elif target and pnum and pnum > float(target):
                 entry["target_hit"] = False
         state[p["url"]] = entry
@@ -1378,32 +1395,34 @@ def daily_summary(cfg):
 
 
 def status_message(cfg, urls=None, which="all"):
-    """Current stock of your products as one message, e.g. for WhatsApp."""
+    """Current stock as a short, simple message: what you can buy (with link and price), then what you can't."""
     state, t = load_state(), now(cfg)
-    rows = []
+    can, cannot, unknown = [], [], []
+    names = {}
     for p in cfg["products"]:
         if urls and p["url"] not in urls:
             continue
         s = state.get(p["url"], {})
-        st_ = s.get("status")
-        if which == "in" and st_ != IN or which == "out" and st_ != OUT:
+        name = short_name(p.get("name") or s.get("title") or "Product")
+        names[name] = names.get(name, 0) + 1
+        can_buy = s.get("status") == IN
+        if which == "in" and not can_buy or which == "out" and s.get("status") != OUT:
             continue
-        name = p.get("name") or s.get("title") or "Product"
-        icon, word = ("✅", "Available") if st_ == IN else ("⛔", "Out of stock") if st_ == OUT else ("⚪", "Not checked yet")
-        since = ""
-        if s.get("since"):
-            try:
-                since = datetime.strptime(s["since"], TS_FMT).strftime("since %d %b, %I:%M %p")
-            except ValueError:
-                pass
-        line2 = " · ".join(x for x in (s.get("price", ""), site_name(p["url"]), since) if x)
-        rows.append(f"{icon} *{name}* – {word}\n{line2}\n{canonical_url(p['url'])}")
-    if not rows:
-        raise ValueError("No products to send" + ({"in": " - nothing is available right now",
-                                                    "out": " - nothing is out of stock right now"}.get(which, "")))
-    head = f"📦 Stock update – {t.strftime('%d %b, %I:%M %p')}"
-    n_in = sum(1 for r in rows if r.startswith("✅"))
-    return head, f"{n_in} of {len(rows)} available\n\n" + "\n\n".join(rows)
+        (can if can_buy else cannot if s.get("status") == OUT else unknown).append((name, p, s))
+    if not (can or cannot or unknown):
+        raise ValueError("No products to send" + ({"in": " - nothing can be bought right now",
+                                                    "out": " - everything can be bought right now"}.get(which, "")))
+    label = lambda name, p: f"{name} ({site_name(p['url'])})"
+    out = []
+    for name, p, s in can:
+        out.append(f"✅ {label(name, p)}\n   Can buy now" + (f" – {s['price']}" if s.get("price") else "")
+                   + f"\n   👉 {share_link(p['url'])}")
+    for name, p, s in cannot:
+        out.append(f"❌ {label(name, p)}\n   Not available")
+    for name, p, s in unknown:
+        out.append(f"⚪ {label(name, p)}\n   Not checked yet")
+    head = f"🛒 Stock now – {t.strftime('%d %b, %I:%M %p').lstrip('0').replace(' 0', ' ')}"
+    return head, "\n\n".join(out)
 
 
 def send_status(cfg, urls=None, which="all", to=None, channels=None):
