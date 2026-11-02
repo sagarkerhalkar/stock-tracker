@@ -290,6 +290,16 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 
 .why{font-size:12px;color:var(--faint);margin:-4px 0 10px;line-height:1.4}
 
+
+/* ---------- WhatsApp link ---------- */
+.waprov{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+.wa-link{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
+.wa-qr{width:180px;height:180px;flex:none;border-radius:12px;border:1px solid var(--line);background:#fff;display:grid;place-items:center;overflow:hidden}
+.wa-qr img{width:100%;height:100%;object-fit:contain}
+.wa-qr .wa-wait{color:#8A93A6;font-weight:800;font-size:22px}
+.wa-qr .wa-ok{color:#0F9D58;font-size:64px;font-weight:800}
+.wa-info{flex:1;min-width:200px}
+
 /* ---------- toast ---------- */
 .toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:50;max-width:min(360px,calc(100vw - 36px))}
 .toast{background:var(--ink);color:var(--surface);padding:11px 14px;border-radius:12px;box-shadow:var(--lift);font-weight:600;animation:drop .3s ease-out}
@@ -431,7 +441,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 11;
+const APP_VERSION = 12;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -767,11 +777,7 @@ const CH = [
    steps:[`In Telegram, open <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>, send <b>/newbot</b> and pick any name. It gives you a <b>token</b>.`,
           `Paste the token below.`, `Open your new bot (BotFather sends the link), press <b>Start</b> and send <b>hi</b>.`, `Press <b>Find my chat ID</b>, then <b>Save</b> and <b>Send test</b>.`],
    fields:[["bot_token","Bot token","123456789:AAH…"],["chat_id","Chat ID","Filled in automatically"]], find:true},
-  {k:"whatsapp", name:"WhatsApp", sub:"Free via CallMeBot · to your own number", color:"#25D366", ico:"W",
-   steps:[`Open <a href="https://www.callmebot.com/blog/free-api-whatsapp-messages/" target="_blank" rel="noopener">CallMeBot's WhatsApp page</a> and save their number in your phone.`,
-          `Send them on WhatsApp: <b>I allow callmebot to send me messages</b>`, `They reply with your <b>API key</b>. Enter it with your number below.`],
-   note:"CallMeBot is a free personal service. Messages can occasionally be delayed – keep Telegram on as a backup.",
-   fields:[["phone","Your WhatsApp number","+919876543210"],["apikey","API key","From CallMeBot's reply"]]},
+  {k:"whatsapp", name:"WhatsApp", sub:"From your own WhatsApp number", color:"#25D366", ico:"W", wa:true, steps:[], fields:[]},
   {k:"google_chat", name:"Google Chat", sub:"Message in a Chat space", color:"#00AC47", ico:"G",
    steps:[`Open <a href="https://chat.google.com" target="_blank" rel="noopener">Google Chat</a> and create a space (e.g. "Stock alerts").`,
           `Click the space name → <b>Apps & integrations</b> → <b>Webhooks</b> → <b>Add webhook</b>.`, `Name it Restock Watch, copy the URL and paste it below.`],
@@ -791,6 +797,7 @@ async function loadSettings(){
   const s = await (await fetch("/api/settings")).json();
   $("#autoRow").hidden = !s.windows; $("#autoStart").checked = !!s.start_with_windows;
   remoteUI(s);
+  setTimeout(() => { clearTimeout(waTimer); waPoll(); }, 50);
   [["#fastMin", s.fast_check_minutes], ["#normMin", s.check_every_minutes]].forEach(([sel, v]) => { const el = $(sel), val = String(+v);
     if (![...el.options].some(o => o.value === val)) el.add(new Option(`${val} minute${+v === 1 ? "" : "s"}`, val));
     el.value = val; });
@@ -798,20 +805,59 @@ async function loadSettings(){
     const ready = v.enabled; return `<section class="chan" data-ch="${c.k}">
       <header><span class="ico" style="background:${c.color}">${c.ico}</span><div><h3>${c.name}</h3><p>${c.sub}</p></div>
         <span class="st badge ${ready ? "in" : ""}"><i></i>${ready ? "On" : "Off"}</span></header>
-      <div class="body">
+      <div class="body">${c.wa ? waBody(v) : `
         ${c.note ? `<p class="note">${c.note}</p>` : ""}
         <ol class="steps">${c.steps.map(x => `<li>${x}</li>`).join("")}</ol>
         <div class="form">${c.fields.map(([f, label, ph]) => `<label>${label}${v[f+"_saved"] ? ` <span class="saved">saved ${esc(v[f+"_saved"])}</span>` : ""}
           ${f === "chat_id" ? `<span class="inline"><input class="field" name="${f}" value="${esc(v[f]||"")}" placeholder="${ph}"><button class="btn small" type="button" data-find>Find my chat ID</button></span>`
-            : `<input class="field" name="${f}" type="${f==="password"?"password":"text"}" value="${esc(v[f]||"")}" placeholder="${v[f+"_saved"] ? "Leave empty to keep the saved one" : ph}" autocomplete="off">`}</label>`).join("")}</div>
+            : `<input class="field" name="${f}" type="${f==="password"?"password":"text"}" value="${esc(v[f]||"")}" placeholder="${v[f+"_saved"] ? "Leave empty to keep the saved one" : ph}" autocomplete="off">`}</label>`).join("")}</div>`}
         <div class="actions"><label class="toggle" title="On / off"><input type="checkbox" ${v.enabled ? "checked" : ""} aria-label="${c.name} on"><span></span></label>
           <button class="btn primary small" data-save>Save</button><button class="btn small" data-test>Send test</button><span class="result"></span></div>
       </div></section>`; }).join("");
 }
+function waBody(v){
+  const realCmb = v.provider === "callmebot" && v.enabled && v.phone && v.phone !== "+919876543210" && v.apikey_saved;
+  const prov = realCmb ? "callmebot" : "web";            // CallMeBot only if it was really set up (not the old example values)
+  return `<div class="waprov" role="radiogroup">
+      <label class="chk"><input type="radio" name="wa_prov" value="web" ${prov === "web" ? "checked" : ""}> My own WhatsApp (scan a QR code)</label>
+      <label class="chk"><input type="radio" name="wa_prov" value="callmebot" ${prov === "callmebot" ? "checked" : ""}> CallMeBot service</label></div>
+    <div class="wa-web" ${prov === "web" ? "" : "hidden"}>
+      <div class="wa-link"><div class="wa-qr" id="waQr"></div><div class="wa-info">
+        <b id="waState">Checking…</b>
+        <ol class="steps" id="waSteps" style="margin-top:6px"><li>Press <b>Link my WhatsApp</b>.</li><li>On your phone: WhatsApp → <b>Settings → Linked devices → Link a device</b>.</li><li>Scan the QR code shown here.</li></ol>
+        <div class="actions" style="margin-top:4px"><button class="btn small primary" type="button" data-walink>Link my WhatsApp</button><button class="btn small" type="button" data-waunlink hidden>Unlink</button></div></div></div>
+      <div class="form" style="margin-top:12px"><label>Send alerts to <input class="field" name="to" value="${esc(v.to || "")}" placeholder="+919876543210, +919812345678" autocomplete="off"></label></div>
+      <p class="note" style="margin-top:10px">Alerts are sent <b>from your linked number</b>. WhatsApp doesn't ring your phone for messages you send yourself, so to be notified send to a family member's number – or link a <b>spare number</b> (second SIM / WhatsApp Business) and send to your personal number. This uses WhatsApp Web, which WhatsApp doesn't officially allow for automatic messages; keep it to your own alerts.</p>
+    </div>
+    <div class="wa-cmb" ${prov === "callmebot" ? "" : "hidden"}>
+      <ol class="steps"><li>Open <a href="https://www.callmebot.com/blog/free-api-whatsapp-messages/" target="_blank" rel="noopener">CallMeBot's WhatsApp page</a> and save their number.</li><li>Send them: <b>I allow callmebot to send me messages</b></li><li>Enter the API key they reply with.</li></ol>
+      <div class="form"><label>Your WhatsApp number <input class="field" name="phone" value="${esc(v.phone || "")}" placeholder="+919876543210" autocomplete="off"></label>
+        <label>API key${v.apikey_saved ? ` <span class="saved">saved ${esc(v.apikey_saved)}</span>` : ""} <input class="field" name="apikey" placeholder="${v.apikey_saved ? "Leave empty to keep the saved one" : "From CallMeBot's reply"}" autocomplete="off"></label></div>
+    </div>`;
+}
+let waTimer = null;
+async function waPoll(){
+  const sec = document.querySelector('.chan[data-ch="whatsapp"]'); if (!sec || !$("#page-alerts").classList.contains("on")){ waTimer = null; return; }
+  let st; try { st = await (await fetch("/api/whatsapp/status", {cache:"no-store"})).json(); } catch (e) { waTimer = setTimeout(waPoll, 4000); return; }
+  const label = {off: st.linked_before ? "Not running – press Link my WhatsApp" : "Not linked yet", starting: "Starting WhatsApp…", loading: "Opening WhatsApp…",
+    qr: "Scan this QR code with your phone", ready: "✓ Linked – alerts will be sent from your WhatsApp", error: "Problem: " + (st.error || "unknown")}[st.state] || st.state;
+  $("#waState").textContent = label; $("#waState").style.color = st.state === "ready" ? "var(--ok)" : st.state === "error" ? "var(--bad)" : "";
+  $("#waQr").innerHTML = st.state === "qr" && st.qr ? `<img src="${st.qr}" alt="WhatsApp QR code">` : st.state === "ready" ? `<span class="wa-ok">✓</span>` : `<span class="wa-wait">${st.state === "off" ? "QR" : "…"}</span>`;
+  $("#waSteps").hidden = st.state === "ready";
+  sec.querySelector("[data-walink]").hidden = st.state === "ready" || st.state === "qr" || st.state === "loading" || st.state === "starting";
+  sec.querySelector("[data-waunlink]").hidden = !(st.state === "ready" || st.linked_before);
+  waTimer = setTimeout(waPoll, st.state === "qr" ? 2500 : 4000);
+}
 function chanValues(sec){ const out = {channel: sec.dataset.ch, enabled: sec.querySelector(".toggle input").checked};
-  sec.querySelectorAll(".form [name]").forEach(i => out[i.name] = i.value); return out; }
+  sec.querySelectorAll(".form [name]").forEach(i => { if (!i.closest("[hidden]")) out[i.name] = i.value; });
+  const pv = sec.querySelector("input[name=wa_prov]:checked"); if (pv) out.provider = pv.value;
+  return out; }
+$("#chans").addEventListener("change", ev => { const r = ev.target.closest("input[name=wa_prov]"); if (!r) return;
+  const sec = r.closest(".chan"); sec.querySelector(".wa-web").hidden = r.value !== "web"; sec.querySelector(".wa-cmb").hidden = r.value !== "callmebot"; });
 $("#chans").addEventListener("click", async ev => {
   const sec = ev.target.closest(".chan"); if (!sec) return; const res = sec.querySelector(".result");
+  if (ev.target.closest("[data-walink]")){ await post("/api/settings", Object.assign(chanValues(sec), {provider: "web"})); await post("/api/whatsapp/link"); $("#waState").textContent = "Starting WhatsApp… (takes up to a minute)"; clearTimeout(waTimer); setTimeout(waPoll, 1500); return; }
+  if (ev.target.closest("[data-waunlink]")){ if (!confirm("Unlink your WhatsApp from Restock Watch?")) return; await post("/api/whatsapp/unlink"); toast("Unlinked. Also remove it on your phone: WhatsApp → Linked devices."); clearTimeout(waTimer); setTimeout(waPoll, 2500); return; }
   const say = (t, ok) => { res.textContent = t; res.className = "result " + (ok ? "ok" : "err"); };
   if (ev.target.closest("[data-find]")){ say("Looking…", true);
     const r = await post("/api/telegram/find", {bot_token: sec.querySelector("[name=bot_token]").value});

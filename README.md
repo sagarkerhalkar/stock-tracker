@@ -92,12 +92,16 @@ https://www.flipkart.com/...
 3. Open your new bot, press **Start**, send "hi".
 4. Press **Find my chat ID** → **Save** → **Send test**.
 
-**WhatsApp (free via CallMeBot, to your own number)**
-1. Open CallMeBot's WhatsApp API page (callmebot.com) and save their number in your phone.
-2. Send them: `I allow callmebot to send me messages`
-3. Paste the API key they reply with, plus your number (+91…) → **Save** → **Send test**.
-CallMeBot is a free personal service and can occasionally be slow – keep Telegram on too.
-For an official business WhatsApp, use Twilio (`provider: twilio` in `config.yaml`).
+**WhatsApp – from your own WhatsApp number (no CallMeBot)**
+1. Alerts → WhatsApp → choose **My own WhatsApp (scan a QR code)** → **Link my WhatsApp**.
+2. On your phone: WhatsApp → **Settings → Linked devices → Link a device** → scan the QR code on the page.
+3. Under **Send alerts to** enter the numbers to message (with +91), **Save**, **Send test**.
+It works like WhatsApp Web (a hidden linked device on this PC) and stays linked after restarts; **Unlink** removes it
+(also remove it on your phone under Linked devices).
+Good to know: WhatsApp doesn't ring your own phone for messages you send yourself – to get a ping, send to someone
+else's number, or link a **spare number** (second SIM / WhatsApp Business) and send to your personal number.
+WhatsApp doesn't officially allow automatic messages from personal accounts; keep it to your own few alerts.
+CallMeBot and Twilio are still available as alternatives.
 
 **Google Chat**
 Space → space name → **Apps & integrations → Webhooks → Add webhook** → copy URL → paste → **Save** → **Send test**.

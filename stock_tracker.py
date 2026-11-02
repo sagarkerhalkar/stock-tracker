@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 11
+APP_VERSION = 12
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -452,6 +452,166 @@ def find_image(soup):
     return m.group(1) if m else ""
 
 
+import threading
+# --------------------------------------------------------------------------- WhatsApp from your own number
+import queue as _queue
+
+WA_URL = os.environ.get("RW_WA_URL", "https://web.whatsapp.com")
+WA_PROFILE = os.path.join(DATA, "whatsapp-profile")
+CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+             "Chrome/129.0.0.0 Safari/537.36")
+WA_READY = "#pane-side, [data-testid='chat-list'], div[aria-label='Chat list'], [aria-label='Chats'][role='grid']"
+WA_QR = "canvas[aria-label*='QR' i], canvas[aria-label*='scan' i], div[data-ref] canvas"
+WA_BOX = "footer div[contenteditable='true'], div[contenteditable='true'][data-tab='10'], div[aria-label='Type a message'][contenteditable='true']"
+WA_INVALID = ("phone number shared via url is invalid", "isn't on whatsapp", "is not on whatsapp")
+
+
+def wa_number(n):
+    d = re.sub(r"\D", "", str(n))
+    if len(d) == 10:          # Indian mobile without country code
+        d = "91" + d
+    return d
+
+
+class WhatsAppWeb:
+    """Your own WhatsApp, linked like WhatsApp Web (scan a QR once). Runs in one background thread
+    that owns a hidden browser; alerts are queued to it."""
+
+    def __init__(self):
+        self.jobs = _queue.Queue()
+        self.state, self.qr, self.error, self.thread = "off", None, "", None
+        self.stop_flag = False
+
+    def status(self):
+        return {"state": self.state, "qr": self.qr if self.state == "qr" else None, "error": self.error,
+                "linked_before": os.path.isdir(WA_PROFILE)}
+
+    def start(self):
+        if self.thread and self.thread.is_alive():
+            return
+        self.stop_flag, self.state, self.error = False, "starting", ""
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def unlink(self):
+        self.stop_flag = True
+        if self.thread:
+            self.thread.join(timeout=20)
+        import shutil
+        shutil.rmtree(WA_PROFILE, ignore_errors=True)
+        self.state, self.qr, self.error = "off", None, ""
+
+    def send(self, numbers, text, timeout=150):
+        if self.state != "ready":
+            self.start()
+        done, out = threading.Event(), {}
+        self.jobs.put((numbers, text, done, out))
+        if not done.wait(timeout):
+            raise RuntimeError("WhatsApp didn't answer in time - is it linked? (Alerts page -> WhatsApp)")
+        if out.get("error"):
+            raise RuntimeError(out["error"])
+        return out
+
+    # ---- runs in the background thread
+    def _run(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.state, self.error = "error", "Needs Playwright - run 1_INSTALL.bat"
+            return
+        try:
+            with sync_playwright() as p:
+                os.makedirs(WA_PROFILE, exist_ok=True)
+                opts = dict(headless=True, user_agent=CHROME_UA, locale="en-IN", viewport={"width": 1280, "height": 900},
+                            args=["--disable-blink-features=AutomationControlled"])
+                try:
+                    ctx = p.chromium.launch_persistent_context(WA_PROFILE, channel="chrome", **opts)
+                except Exception:
+                    ctx = p.chromium.launch_persistent_context(WA_PROFILE, **opts)
+                ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto(WA_URL, wait_until="domcontentloaded", timeout=90000)
+                last_qr = 0
+                while not self.stop_flag:
+                    self._refresh(page, last_qr)
+                    if self.state == "qr":
+                        last_qr = time.time()
+                    try:
+                        job = self.jobs.get(timeout=2)
+                    except _queue.Empty:
+                        continue
+                    numbers, text, done, out = job
+                    if self.state != "ready":
+                        out["error"] = ("WhatsApp isn't linked yet - open the Alerts page, WhatsApp, and scan the QR code"
+                                        if self.state == "qr" else f"WhatsApp is not ready ({self.state})")
+                        done.set()
+                        continue
+                    try:
+                        out["sent"] = [self._send_one(page, n, text) for n in numbers]
+                    except Exception as e:
+                        out["error"] = str(e).splitlines()[0][:200]
+                    done.set()
+                    try:
+                        page.goto(WA_URL, wait_until="domcontentloaded", timeout=90000)
+                    except Exception:
+                        pass
+                ctx.close()
+        except Exception as e:
+            self.state, self.error = "error", str(e).splitlines()[0][:200]
+        finally:
+            while not self.jobs.empty():          # don't leave anyone waiting
+                _, _, done, out = self.jobs.get()
+                out["error"] = self.error or "WhatsApp stopped"
+                done.set()
+            if self.state not in ("error",):
+                self.state = "off"
+
+    def _refresh(self, page, last_qr):
+        try:
+            if page.query_selector(WA_READY):
+                self.state, self.qr, self.error = "ready", None, ""
+                return
+            qr = page.query_selector(WA_QR)
+            if qr:
+                if time.time() - last_qr > 3:
+                    import base64
+                    shot = qr.screenshot()
+                    self.qr = "data:image/png;base64," + base64.b64encode(shot).decode()
+                self.state = "qr"
+                return
+            body = (page.inner_text("body") or "").lower()[:2000]
+            if "works with google chrome" in body or "update google chrome" in body:
+                self.state, self.error = "error", "WhatsApp Web didn't accept this browser - install Google Chrome"
+            elif self.state not in ("qr", "ready"):
+                self.state = "loading"
+        except Exception:
+            pass
+
+    def _send_one(self, page, number, text):
+        from urllib.parse import quote as _q
+        num = wa_number(number)
+        if len(num) < 11:
+            raise RuntimeError(f"'{number}' doesn't look like a full WhatsApp number (use +91…)")
+        page.goto(f"{WA_URL}/send?phone={num}&text={_q(text)}", wait_until="domcontentloaded", timeout=90000)
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            box = page.query_selector(WA_BOX)
+            if box and (box.inner_text() or "").strip():
+                box.click()
+                page.keyboard.press("Enter")
+                page.wait_for_timeout(2500)
+                if not (box.inner_text() or "").strip():
+                    return num
+            body = (page.inner_text("body") or "").lower()[:4000]
+            if any(w in body for w in WA_INVALID):
+                raise RuntimeError(f"+{num} is not on WhatsApp")
+            page.wait_for_timeout(1000)
+        raise RuntimeError(f"Couldn't send to +{num} (WhatsApp didn't open the chat in time)")
+
+
+WA = WhatsAppWeb()
+
+
 # --------------------------------------------------------------------------- notifications
 REQUIRED = {"telegram": ["bot_token", "chat_id"], "whatsapp": ["phone", "apikey"], "google_chat": ["webhook_url"],
             "email": ["username", "password"], "ntfy": ["topic"], "discord": ["webhook_url"], "slack": ["webhook_url"]}
@@ -470,12 +630,14 @@ def notify_all(cfg, subject, message, attach=None, alert=None, only=None):
         if not only and not c.get("enabled"):
             continue
         missing = [f for f in REQUIRED.get(name, []) if not str(c.get(f) or "").strip()]
+        if name == "whatsapp" and c.get("provider") == "web":
+            missing = [] if c.get("to") else ["to"]
         if name == "whatsapp" and c.get("provider") == "twilio":
             missing = [f for f in ("account_sid", "auth_token", "from_number", "to_number") if not c.get(f)]
         if missing:
             labels = {"username": "your Gmail address", "password": "app password", "apikey": "API key",
                       "phone": "your WhatsApp number", "bot_token": "bot token", "chat_id": "chat ID",
-                      "webhook_url": "webhook URL", "topic": "topic name"}
+                      "webhook_url": "webhook URL", "topic": "topic name", "to": "who to send alerts to"}
             errors[name] = "Please fill in " + " and ".join(labels.get(m, m.replace("_", " ")) for m in missing)
             continue
         try:
@@ -578,7 +740,13 @@ def plain_text(subject, msg, alert, bold="*"):
 def send_whatsapp(c, subject, msg, alert, attach=None):
     text = plain_text(subject, msg, alert)
     provider = c.get("provider", "callmebot")
-    if provider == "callmebot":
+    if provider == "web":
+        to = c.get("to") or []
+        to = [x.strip() for x in (to.split(",") if isinstance(to, str) else to) if str(x).strip()]
+        if not to:
+            raise RuntimeError("Add at least one number under 'Send alerts to'")
+        WA.send(to, text)
+    elif provider == "callmebot":
         phone = re.sub(r"[^\d+]", "", str(c["phone"]))
         r = requests.get("https://api.callmebot.com/whatsapp.php",
                          params={"phone": phone, "text": text, "apikey": str(c["apikey"]).strip()}, timeout=30)
@@ -1453,7 +1621,7 @@ SECRET_KEYS = ("bot_token", "apikey", "password", "auth_token", "webhook_url")
 CHANNEL_FIELDS = {
     "desktop": [],
     "telegram": ["bot_token", "chat_id"],
-    "whatsapp": ["provider", "phone", "apikey", "account_sid", "auth_token", "from_number", "to_number"],
+    "whatsapp": ["provider", "to", "phone", "apikey", "account_sid", "auth_token", "from_number", "to_number"],
     "google_chat": ["webhook_url"],
     "email": ["smtp_server", "smtp_port", "username", "password", "to"],
     "ntfy": ["topic"],
@@ -1523,7 +1691,7 @@ def api_settings_get():
             if f in SECRET_KEYS:
                 v = str(v or "")
                 item[f] = ""
-                item[f + "_saved"] = ("•••• " + v[-4:]) if v and "Your" not in v and "XXXX" not in v and len(v) > 6 else ""
+                item[f + "_saved"] = ("•••• " + v[-4:]) if v and "Your" not in v and "XXXX" not in v and v != "1234567" and len(v) > 6 else ""
             else:
                 item[f] = ", ".join(v) if isinstance(v, list) else ("" if v is None else str(v))
         out[ch] = item
@@ -2056,6 +2224,8 @@ def run_web(port, host=None):
                 return self.send(d)
             if path == "/api/olddata":
                 return self.send({"found": [{k: v for k, v in f.items() if k != "_ts"} for f in find_old_data()]})
+            if path == "/api/whatsapp/status":
+                return self.send(WA.status())
             if path == "/api/report":
                 return self.send({"items": product_timelines(load_config(), include_removed="removed=1" in self.path)})
             if path == "/download":
@@ -2139,6 +2309,12 @@ def run_web(port, host=None):
                     st_ = load_state()
                     st_.setdefault(gone[0]["url"], {})["name"] = gone[0]["name"]
                     save_state(st_)
+            elif self.path == "/api/whatsapp/link":
+                WA.start()
+                return self.send({"ok": True})
+            elif self.path == "/api/whatsapp/unlink":
+                threading.Thread(target=WA.unlink, daemon=True).start()
+                return self.send({"ok": True})
             elif self.path == "/api/check-one":
                 prod = [p for p in cfg["products"] if p["url"] == body.get("url")]
                 if not prod:
@@ -2239,6 +2415,9 @@ def run_web(port, host=None):
     threading.Thread(target=run_forever, daemon=True).start()
     threading.Thread(target=watch_other_copies, args=(port,), daemon=True).start()
     threading.Thread(target=update_checker, daemon=True).start()
+    wa_cfg = load_config()["notifications"].get("whatsapp") or {}
+    if wa_cfg.get("provider") == "web" and os.path.isdir(WA_PROFILE):
+        WA.start()                                  # re-open your linked WhatsApp in the background
     link = f"http://localhost:{port}"
     print(f"\n  Restock Watch (version {APP_VERSION}) is running:  {link}\n  Keep this window open (minimise it). Ctrl+C to stop.\n")
     if host == "0.0.0.0":
