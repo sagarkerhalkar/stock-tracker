@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 16
+APP_VERSION = 17
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -254,26 +254,71 @@ def inr(value):
     return "₹" + t + (f"{paise:.2f}"[1:] if paise else "")
 
 
-def find_price(soup, html):
-    return inr(_find_price(soup, html))
+def find_price(soup, html, site=""):
+    return inr(_find_price(soup, site))
 
 
-def _find_price(soup, html):
-    for sel in ["#corePriceDisplay_desktop_feature_div .a-price .a-offscreen", "#corePrice_feature_div .a-offscreen",
-                "#priceblock_dealprice", "#priceblock_ourprice", ".a-price .a-offscreen",
-                "div.Nx9bqj", "div._30jeq3", "[itemprop=price]", "meta[property='product:price:amount']"]:
+def _num(text):
+    m = re.search(r"\d[\d,]*(?:\.\d+)?", (text or "").replace("\xa0", " "))
+    return m.group(0) if m and to_num(m.group(0)) else ""
+
+
+def _schema_price(soup):
+    """Price from the shop's own product data (JSON-LD offers) - prefers an offer that is in stock."""
+    best = ""
+    for sc in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(sc.string or "")
+        except Exception:
+            continue
+        stack = [data]
+        while stack:
+            d = stack.pop()
+            if isinstance(d, list):
+                stack.extend(d)
+            elif isinstance(d, dict):
+                if "price" in d or "lowPrice" in d:
+                    val = _num(str(d.get("price") or d.get("lowPrice")))
+                    if val:
+                        if "instock" in str(d.get("availability", "")).lower().replace(" ", ""):
+                            return val
+                        best = best or val
+                stack.extend(v for v in d.values() if isinstance(v, (dict, list)))
+    return best
+
+
+def _find_price(soup, site=""):
+    """The product's own selling price only - never any other amount on the page
+    (menus like 'Under ₹500', offers, or 'similar products' prices)."""
+    if site == "Amazon":
+        box = soup.select_one("#corePriceDisplay_desktop_feature_div .priceToPay, #corePrice_feature_div .priceToPay, "
+                              "#apex_desktop .priceToPay")
+        if box:
+            whole = box.select_one(".a-price-whole")
+            if whole and _num(text_of(whole)):
+                frac = box.select_one(".a-price-fraction")
+                return _num(text_of(whole)).rstrip(".") + ("." + _num(text_of(frac)) if frac and _num(text_of(frac)) else "")
+        for sel in ["#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen",
+                    "#tp_price_block_total_price_ww .a-offscreen", "#corePrice_feature_div .a-price .a-offscreen",
+                    "#corePrice_desktop .a-price .a-offscreen", "#priceblock_dealprice", "#priceblock_ourprice",
+                    "#price_inside_buybox", "#newBuyBoxPrice"]:
+            for el in soup.select(sel):
+                v = _num(text_of(el))
+                if v:
+                    return v
+        return ""
+    v = _schema_price(soup)
+    if v:
+        return v
+    if site == "Flipkart":
+        return ""
+    for sel in ["[itemprop=price]", "meta[property='product:price:amount']", "meta[property='og:price:amount']"]:
         el = soup.select_one(sel)
         if el:
-            val = el.get("content") or text_of(el)
-            m = re.search(r"[\d,]+(?:\.\d+)?", val or "")
-            if m:
-                return "₹" + m.group(0) if "₹" not in val else val.strip()
-    m = re.search(r'"price"\s*:\s*"?([\d.,]+)', " ".join(s.string or "" for s in
-                                                       soup.find_all("script", type="application/ld+json")))
-    if m:
-        return "₹" + m.group(1)
-    m = re.search(r"₹\s?[\d,]{2,}", soup.get_text(" ", strip=True)[:20000])
-    return m.group(0).replace(" ", "") if m else ""
+            v = _num(el.get("content") or text_of(el))
+            if v:
+                return v
+    return ""
 
 
 def schema_availability(soup):
@@ -397,7 +442,8 @@ def analyse_html(product, html, site):
         status, detail = IN, f"found your text '{product['in_stock_text']}'"
     if product.get("out_of_stock_text") and product["out_of_stock_text"].lower() in page:
         status, detail = OUT, f"found your text '{product['out_of_stock_text']}'"
-    return {"status": status, "detail": detail, "price": find_price(soup, html), "title": title[:150],
+    price = find_price(soup, html, site) if status != OUT or site != "Amazon" else ""   # unavailable on Amazon = no real price
+    return {"status": status, "detail": detail, "price": price, "title": title[:150],
             "image": find_image(soup)}
 
 
@@ -894,6 +940,7 @@ def product_timelines(cfg, events=None, state=None, include_removed=False, only=
         order += removed_urls
     conf = {p["url"]: p for p in cfg["products"]}
     out = []
+    price_since = prices_valid_from()
     for url in order:
         evs = sorted(by_url.get(url, []), key=lambda e: f"{e['date']} {e['time']}")
         p, s = conf.get(url, {}), state.get(url, {})
@@ -908,7 +955,8 @@ def product_timelines(cfg, events=None, state=None, include_removed=False, only=
                 continue
             if periods:
                 periods[-1]["end"] = ts
-            periods.append({"status": e["new_status"], "start": ts, "end": None, "price": e.get("price", "")})
+            periods.append({"status": e["new_status"], "start": ts, "end": None,
+                            "price": e.get("price", "") if ts >= price_since else ""})
         end_now = (s.get("last_checked") if removed else None) or current.strftime(TS_FMT)
         secs = {IN: 0, OUT: 0}
         for per in periods:
@@ -1712,6 +1760,20 @@ CHANNEL_FIELDS = {
 }
 
 
+PRICE_FIX_VERSION = 17
+
+
+def prices_valid_from():
+    """Prices recorded before version 17 could be another product's price - only trust newer ones."""
+    cfg = load_config()
+    v = cfg["settings"].get("prices_valid_from")
+    if not v:
+        v = now(cfg).strftime(TS_FMT)
+        cfg["settings"]["prices_valid_from"] = v
+        save_config(cfg)
+    return v
+
+
 def price_history():
     """Last 40 prices per product, read from checks.csv (cached until the file changes)."""
     try:
@@ -1719,8 +1781,10 @@ def price_history():
     except OSError:
         return {}
     if _HIST["mtime"] != mt:
-        h = {}
+        h, since = {}, prices_valid_from()
         for row in read_csv(CHECKS_CSV)[-20000:]:
+            if f"{row.get('date', '')} {row.get('time', '')}" < since:
+                continue
             v = to_num(row.get("price"))
             if v:
                 h.setdefault(row["url"], []).append(v)
@@ -2513,6 +2577,7 @@ def run_web(port, host=None):
     threading.Thread(target=run_forever, daemon=True).start()
     threading.Thread(target=watch_other_copies, args=(port,), daemon=True).start()
     threading.Thread(target=update_checker, daemon=True).start()
+    prices_valid_from()
     wa_cfg = load_config()["notifications"].get("whatsapp") or {}
     if wa_cfg.get("provider") == "web" and os.path.isdir(WA_PROFILE):
         WA.start()                                  # re-open your linked WhatsApp in the background
