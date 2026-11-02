@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 12
+APP_VERSION = 13
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -460,7 +460,9 @@ WA_URL = os.environ.get("RW_WA_URL", "https://web.whatsapp.com")
 WA_PROFILE = os.path.join(DATA, "whatsapp-profile")
 CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
              "Chrome/129.0.0.0 Safari/537.36")
-WA_READY = "#pane-side, [data-testid='chat-list'], div[aria-label='Chat list'], [aria-label='Chats'][role='grid']"
+WA_READY = ("#pane-side, [data-testid='chat-list'], div[aria-label='Chat list'], [aria-label='Chats'][role='grid'], "
+            "[data-testid='chatlist-header'], [data-icon='new-chat-outline'], [data-icon='chat'], [aria-label='New chat'], "
+            "[data-icon='search'], div[role='textbox'][contenteditable='true'][data-tab='3']")
 WA_QR = "canvas[aria-label*='QR' i], canvas[aria-label*='scan' i], div[data-ref] canvas"
 WA_BOX = "footer div[contenteditable='true'], div[contenteditable='true'][data-tab='10'], div[aria-label='Type a message'][contenteditable='true']"
 WA_INVALID = ("phone number shared via url is invalid", "isn't on whatsapp", "is not on whatsapp")
@@ -531,13 +533,11 @@ class WhatsAppWeb:
                 ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 page.goto(WA_URL, wait_until="domcontentloaded", timeout=90000)
-                last_qr = 0
+                self._qr_key, self._qr_at = None, 0
                 while not self.stop_flag:
-                    self._refresh(page, last_qr)
-                    if self.state == "qr":
-                        last_qr = time.time()
+                    self._refresh(page)
                     try:
-                        job = self.jobs.get(timeout=2)
+                        job = self.jobs.get(timeout=1)
                     except _queue.Empty:
                         continue
                     numbers, text, done, out = job
@@ -566,24 +566,35 @@ class WhatsAppWeb:
             if self.state not in ("error",):
                 self.state = "off"
 
-    def _refresh(self, page, last_qr):
+    def _refresh(self, page):
+        """Keep self.state / self.qr in step with the hidden WhatsApp page.
+        WhatsApp changes its QR code about every 20 seconds, so it is re-captured whenever it changes."""
         try:
             if page.query_selector(WA_READY):
                 self.state, self.qr, self.error = "ready", None, ""
                 return
             qr = page.query_selector(WA_QR)
             if qr:
-                if time.time() - last_qr > 3:
+                holder = page.query_selector("div[data-ref]")
+                key = holder.get_attribute("data-ref") if holder else None
+                if key != self._qr_key or time.time() - self._qr_at > 2 or not self.qr:
                     import base64
-                    shot = qr.screenshot()
-                    self.qr = "data:image/png;base64," + base64.b64encode(shot).decode()
+                    self.qr = "data:image/png;base64," + base64.b64encode(qr.screenshot()).decode()
+                    self._qr_key, self._qr_at = key, time.time()
                 self.state = "qr"
                 return
-            body = (page.inner_text("body") or "").lower()[:2000]
+            body = (page.inner_text("body") or "").lower()[:3000]
+            if "reload qr" in body or "click to reload" in body:       # WhatsApp stops after a few codes
+                btn = page.query_selector("div[data-ref] button, button:has-text('Reload'), span[data-icon='refresh-large']")
+                if btn:
+                    btn.click()
+                self.state, self.qr = "loading", None
+                return
             if "works with google chrome" in body or "update google chrome" in body:
                 self.state, self.error = "error", "WhatsApp Web didn't accept this browser - install Google Chrome"
-            elif self.state not in ("qr", "ready"):
-                self.state = "loading"
+                return
+            # no QR and no chat list: logging in / loading chats - never keep showing an old QR code
+            self.state, self.qr = "loading", None
         except Exception:
             pass
 

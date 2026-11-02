@@ -294,7 +294,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 /* ---------- WhatsApp link ---------- */
 .waprov{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
 .wa-link{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
-.wa-qr{width:180px;height:180px;flex:none;border-radius:12px;border:1px solid var(--line);background:#fff;display:grid;place-items:center;overflow:hidden}
+.wa-qr{width:240px;height:240px;flex:none;border-radius:12px;border:1px solid var(--line);background:#fff;display:grid;place-items:center;overflow:hidden}
 .wa-qr img{width:100%;height:100%;object-fit:contain}
 .wa-qr .wa-wait{color:#8A93A6;font-weight:800;font-size:22px}
 .wa-qr .wa-ok{color:#0F9D58;font-size:64px;font-weight:800}
@@ -441,7 +441,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 12;
+const APP_VERSION = 13;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -839,8 +839,8 @@ let waTimer = null;
 async function waPoll(){
   const sec = document.querySelector('.chan[data-ch="whatsapp"]'); if (!sec || !$("#page-alerts").classList.contains("on")){ waTimer = null; return; }
   let st; try { st = await (await fetch("/api/whatsapp/status", {cache:"no-store"})).json(); } catch (e) { waTimer = setTimeout(waPoll, 4000); return; }
-  const label = {off: st.linked_before ? "Not running – press Link my WhatsApp" : "Not linked yet", starting: "Starting WhatsApp…", loading: "Opening WhatsApp…",
-    qr: "Scan this QR code with your phone", ready: "✓ Linked – alerts will be sent from your WhatsApp", error: "Problem: " + (st.error || "unknown")}[st.state] || st.state;
+  const label = {off: st.linked_before ? "Not running – press Link my WhatsApp" : "Not linked yet", starting: "Starting WhatsApp…", loading: "Opening WhatsApp… (after scanning, linking takes up to a minute)",
+    qr: "Scan this QR code with your phone (it changes every ~20 seconds – that's normal)", ready: "✓ Linked – alerts will be sent from your WhatsApp", error: "Problem: " + (st.error || "unknown")}[st.state] || st.state;
   $("#waState").textContent = label; $("#waState").style.color = st.state === "ready" ? "var(--ok)" : st.state === "error" ? "var(--bad)" : "";
   $("#waQr").innerHTML = st.state === "qr" && st.qr ? `<img src="${st.qr}" alt="WhatsApp QR code">` : st.state === "ready" ? `<span class="wa-ok">✓</span>` : `<span class="wa-wait">${st.state === "off" ? "QR" : "…"}</span>`;
   $("#waSteps").hidden = st.state === "ready";
