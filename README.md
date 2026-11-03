@@ -90,6 +90,7 @@ It was gone for 3h 12m.                  🕒 2 Nov, 2:40 PM
 |---|---|---|
 | Out of stock | **2 minutes** | so you hear the moment it's back |
 | Available | **5 minutes** | so you hear when it sells out |
+| ⚡ Sells out fast (changed 3+ times in 24 h) | **30 seconds**, in stock or not | so even a few seconds of stock is caught, with the real start and end time |
 
 Change both on the **Alerts** page. Alerts are sent the instant a change is detected, before anything else.
 Going below 1–2 minutes risks Amazon/Flipkart temporarily blocking your connection. No tool can see a restock
@@ -149,15 +150,21 @@ enter your Gmail + that 16-letter password. Alerts arrive with the Excel and PDF
    *other* products, sizes or reviews on the same page.
 3. Shops sometimes send automated downloads a different "Notify me" version of the page. So anything that doesn't
    clearly say **in stock** is re-checked in a **real Chrome browser** (the same page you see), and the browser wins.
-4. Every change (in → out, out → in) is **checked twice** before you get an alert, so one odd page can't cause a wrong alert.
+4. **"Available" is alerted at once** – a real Add-to-cart button or the shop's own "InStock" data is never shown by
+   mistake, and some products can be bought for only a few seconds. **"Out of stock" is checked twice** (a second look in
+   the real browser) – shops sometimes show robots a "Notify me" page, so one odd page can't cause a wrong "sold out".
+   Every change is saved with the time the page was actually read (to the second), and alerts say how long it lasted
+   ("It was there for 40 sec").
 5. If a page can't be read (robot check), the product shows **"Couldn't check it just now – last known status"**
    instead of a wrong status, and it keeps trying.
-6. **Products that "come and go".** Some shops (often Flipkart, when a seller has only 1–2 copies) show
-   *Add to cart* for a few seconds and then *Notify me* again. When a product has changed 3+ times in 24 hours,
-   its card shows **🟡 Comes and goes**. When it then shows *available*, it is checked every minute and you get the
-   "available" alert **only if it stays available for 5 minutes**. Short blips are ignored (no alert, no history entry).
-   "Out of stock" is still believed at once (checked twice), so the card never wrongly says you can buy it. Change the 5 minutes – or turn it
-   off – on the **Alerts** page ("If a product keeps coming and going…"), or `stay_minutes:` in `config.yaml`.
+6. **Products that sell out in seconds.** Some shops (often Flipkart, when a seller has only 1–2 copies) show
+   *Add to cart* for a few seconds and then *Notify me* again. When a product has changed 3+ times in 24 hours, its
+   card shows **⚡ Sells out fast** and it is checked **every 30 seconds** (change `flicker_check_seconds:` in
+   `config.yaml`; checking much faster risks the shop blocking you). The moment it shows *Add to cart* you get
+   **🟢 Back! You can buy it now … ⚡ It often sells out in seconds – buy fast!**, and when it is gone again you get
+   **🔴 Sold out – It was there for 40 sec**. Every such moment is in your history and reports.
+   If you'd rather not hear about very short moments, choose "only if it stays 2 / 5 / 10 / 15 minutes" on the
+   **Alerts** page (or `stay_minutes:` in `config.yaml`); the default is **at once**.
 
 Each product card shows **Why:** – what was found and when (e.g. "Flipkart: 'Add To Cart' button (real browser) –
 confirmed twice · checked 1 min ago"). Use ••• → **Check this product now** any time.

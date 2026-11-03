@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 21
+APP_VERSION = 22
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -447,10 +447,16 @@ def analyse_html(product, html, site):
             "image": find_image(soup)}
 
 
-def check_product(product, settings, force_browser=False):
+BROWSER_LAST = {}            # url -> when the real browser last looked at it
+
+
+def check_product(product, settings, force_browser=False, known=None):
     """Check one product. A quick download first; then, for anything that isn't a clear 'in stock'
     (or when asked), a real Chrome browser - shops sometimes send automated downloads a different,
-    'Notify me' version of the page, but a real browser gets the page you see."""
+    'Notify me' version of the page, but a real browser gets the page you see.
+    `known` = the status saved now: if the quick check agrees it is still out of stock and the browser
+    looked less than 2 minutes ago, the slow browser step is skipped (so fast checks stay fast)."""
+    started = time.time()
     url = canonical_url(product["url"])
     site = site_name(product["url"])
     mode = settings.get("use_browser", "auto")             # auto | always | never
@@ -463,7 +469,11 @@ def check_product(product, settings, force_browser=False):
         else:
             errs.append(err)
     need_browser = mode != "never" and (force_browser or mode == "always" or not res or res["status"] != IN)
+    if need_browser and not force_browser and mode != "always" and res and res["status"] == OUT and known == OUT \
+            and time.time() - BROWSER_LAST.get(url, 0) < 110:
+        need_browser = False                               # no change and the browser agreed a moment ago
     if need_browser:
+        BROWSER_LAST[url] = time.time()
         html, err = fetch_with_browser(url)
         if html:
             b = analyse_html(product, html, site)
@@ -478,6 +488,7 @@ def check_product(product, settings, force_browser=False):
                 "title": (res or {}).get("title", ""), "image": (res or {}).get("image", "")}
     res["site"] = site
     res["detail"] = f"{res['detail']} ({res['via']})"
+    res["at"] = started if res["via"] == "quick check" else BROWSER_LAST.get(url, started)
     return res
 
 
@@ -899,12 +910,16 @@ def fmt_dur(sec):
     sec = int(max(sec, 0))
     d, r = divmod(sec, 86400)
     h, r = divmod(r, 3600)
-    m = r // 60
+    m, s_ = divmod(r, 60)
     if d:
         return f"{d}d {h}h"
     if h:
         return f"{h}h {m}m"
-    return f"{m} min" if m else "less than a minute"
+    if m >= 10:
+        return f"{m} min"
+    if m:
+        return f"{m} min {s_} sec" if s_ else f"{m} min"
+    return f"{s_} sec"
 
 
 def fmt_when(ts):
@@ -1290,32 +1305,49 @@ EVENT_TITLES = {
 }
 
 
-def interval_for(cfg, status, pending=False):
-    """Out-of-stock products are watched more closely so you hear the moment they come back."""
+def interval_for(cfg, status, pending=False, flicker=False):
+    """Out-of-stock products are watched more closely so you hear the moment they come back.
+    'Comes and goes' products are checked every `flicker_check_seconds` (default 30) - in stock or not -
+    so even a few seconds of stock is caught and the exact start / end time is recorded."""
     s = cfg["settings"]
-    if pending:                     # a 'comes and goes' product just changed - look again in a minute
+    if flicker:
+        try:
+            return max(15.0, float(s.get("flicker_check_seconds", 30)))
+        except (TypeError, ValueError):
+            return 30.0
+    if pending:                     # waiting to see if a change lasts - look again in a minute
         return 60.0
     if status == IN:
         return float(s.get("check_every_minutes", 5)) * 60
     return float(s.get("fast_check_minutes", 2)) * 60
 
 
-# ---- "comes and goes" guard ----------------------------------------------------------------
-# Some shop pages flicker: Flipkart can show 'Add to cart' for less than a minute and then 'Notify me'
-# again (a seller's last copy is reserved / released). For such products a change must LAST for
-# `stay_minutes` (default 5) before it is saved and you are told - so blips never send an alert.
+# ---- "comes and goes" products ---------------------------------------------------------------
+# Some shop pages flicker: Flipkart can show 'Add to cart' for under a minute and then 'Notify me'
+# again (a seller's last copy is reserved / released). Such products are checked every 30 seconds and
+# every 'available' moment is alerted at once and saved with its real start and end time.
+# Optional: `stay_minutes` > 0 = only alert 'available' when it lasts that long (off by default).
 FLICKER_CHANGES = 3            # this many changes / blips in 24 hours = a 'comes and goes' product
 
 
 def stay_seconds(cfg):
     try:
-        return max(0.0, float(cfg["settings"].get("stay_minutes", 5))) * 60
+        return max(0.0, float(cfg["settings"].get("stay_minutes", 0) or 0)) * 60
     except (TypeError, ValueError):
-        return 300.0
+        return 0.0
+
+
+_CHANGES_CACHE = {}
 
 
 def recent_changes(cfg, hours=24):
-    """url -> number of real in/out changes in the last `hours` (from events.csv)."""
+    """url -> number of real in/out changes in the last `hours` (from events.csv; cached for a minute)."""
+    try:
+        key = (os.path.getmtime(EVENTS_CSV), hours, int(time.time() // 60))
+    except OSError:
+        return {}
+    if _CHANGES_CACHE.get("key") == key:
+        return _CHANGES_CACHE["val"]
     cutoff, out, zone = time.time() - hours * 3600, {}, tz(cfg)
     for e in read_csv(EVENTS_CSV)[-3000:]:
         if e.get("event") not in ("BACK IN STOCK", "WENT OUT OF STOCK"):
@@ -1326,6 +1358,7 @@ def recent_changes(cfg, hours=24):
             continue
         if ts >= cutoff:
             out[e.get("url")] = out.get(e.get("url"), 0) + 1
+    _CHANGES_CACHE.update(key=key, val=out)
     return out
 
 
@@ -1338,13 +1371,13 @@ def is_flickering(entry, changes):
     return changes + len(recent_blips(entry)) >= FLICKER_CHANGES
 
 
-def _check_site_group(group, s):
+def _check_site_group(group, s, known=None):
     """Products of the SAME site run one after another (polite); different sites run in parallel."""
     out = []
     for i, p in enumerate(group):
         PROGRESS["current"] = p.get("name") or p["url"]
         try:
-            res = check_product(p, s)
+            res = check_product(p, s, known=(known or {}).get(p["url"]))
         except Exception as e:
             res = {"status": UNKNOWN, "price": "", "detail": f"error: {e}", "site": site_name(p["url"])}
         out.append((p, res))
@@ -1375,21 +1408,22 @@ def _check_all(cfg, send, products):
     groups = {}
     for p in products:
         groups.setdefault(site_name(p["url"]), []).append(p)
+    known = {u: v.get("status") for u, v in load_state().items()}
     with ThreadPoolExecutor(max_workers=min(6, len(groups))) as ex:
-        results = [r for chunk in ex.map(lambda g: _check_site_group(g, s), groups.values()) for r in chunk]
+        results = [r for chunk in ex.map(lambda g: _check_site_group(g, s, known), groups.values()) for r in chunk]
 
-    # Confirm every change of status with a second, real-browser check before believing it,
-    # so one odd page can never trigger a wrong "out of stock" / "back in stock".
+    # A change to OUT is confirmed with a second, real-browser check (shops sometimes show robots a
+    # 'Notify me' page). A change to IN is believed at once: a real Add-to-cart button / the shop's own
+    # 'InStock' data is not shown by mistake, and some products are buyable for only a few seconds.
     state = load_state()
     confirmed = []
     for p, res in results:
         old = state.get(p["url"], {}).get("status")
-        if old in (IN, OUT) and res["status"] in (IN, OUT) and res["status"] != old \
-                and s.get("use_browser", "auto") != "never":
+        if old == IN and res["status"] == OUT and s.get("use_browser", "auto") != "never":
             PROGRESS["current"] = "Double-checking " + (p.get("name") or p["url"])
             second = check_product(p, s, force_browser=True)
             if second["status"] == res["status"]:
-                res = second
+                res = dict(second, at=res.get("at") or second.get("at"))   # time = when it was first seen
                 res["detail"] += " - confirmed twice"
             elif second["status"] in (IN, OUT):
                 res = second            # the real browser disagreed with the quick check: trust the browser
@@ -1399,9 +1433,9 @@ def _check_all(cfg, send, products):
     results = confirmed
     alerts = []
     hold = stay_seconds(cfg)
-    changes24 = recent_changes(cfg) if hold else {}
+    changes24 = recent_changes(cfg)
     for p, res in results:
-        t = now(cfg)
+        t = datetime.fromtimestamp(res["at"], tz(cfg)) if res.get("at") else now(cfg)
         date, clock = t.strftime("%Y-%m-%d"), t.strftime("%H:%M:%S")
         name = p.get("name") or res.get("title") or p["url"]
         prev = state.get(p["url"], {})
@@ -1466,12 +1500,13 @@ def _check_all(cfg, send, products):
                 if not (old is None and not s.get("notify_on_first_check", True)):
                     previous = ""
                     if old and prev.get("since"):
-                        dur = fmt_dur(time.time() - datetime.strptime(prev["since"], "%Y-%m-%d %H:%M:%S")
+                        dur = fmt_dur(t.timestamp() - datetime.strptime(prev["since"], "%Y-%m-%d %H:%M:%S")
                                       .replace(tzinfo=tz(cfg)).timestamp())
                         previous = (f"It was gone for {dur}." if old == OUT else f"It was there for {dur}.")
                     if accepted_after:
-                        previous = (previous + " " + accepted_after +
-                                    (" It often comes and goes - buy fast." if res["status"] == IN else "")).strip()
+                        previous = (previous + " " + accepted_after).strip()
+                    if res["status"] == IN and is_flickering(prev, changes24.get(p["url"], 0)):
+                        previous = (previous + " ⚡ It often sells out in seconds - buy fast!").strip()
                     alerts.append((EVENT_TITLES[event], dict(base, previous=previous)))
             target = p.get("target_price")
             pnum = to_num(res["price"])
@@ -1570,12 +1605,14 @@ def send_status(cfg, urls=None, which="all", to=None, channels=None):
 
 def due_products(cfg, force=False):
     state, t = load_state(), time.time()
+    changes24 = recent_changes(cfg)
     due, next_at = [], None
     for p in cfg["products"]:
         if not p.get("active", True):
             continue
         st_ = state.get(p["url"], {})
-        at = st_.get("last_ts", 0) + interval_for(cfg, st_.get("status"), bool(st_.get("pending")))
+        at = st_.get("last_ts", 0) + interval_for(cfg, st_.get("status"), bool(st_.get("pending")),
+                                                  is_flickering(st_, changes24.get(p["url"], 0)))
         if force or at <= t:
             due.append(p)
         else:
@@ -1872,9 +1909,11 @@ def api_state():
         s = state.get(p["url"], {})
         due_in = None
         if s.get("last_ts"):
-            due_in = max(0, int(s["last_ts"] + interval_for(cfg, s.get("status"), bool(s.get("pending"))) - time.time()))
+            due_in = max(0, int(s["last_ts"] + interval_for(cfg, s.get("status"), bool(s.get("pending")),
+                                                            is_flickering(s, changes24.get(p["url"], 0))) - time.time()))
         flicker = {"changes": changes24.get(p["url"], 0), "blips": len(recent_blips(s)),
-                   "on": bool(stay_seconds(cfg)) and is_flickering(s, changes24.get(p["url"], 0)),
+                   "on": is_flickering(s, changes24.get(p["url"], 0)),
+                   "every_seconds": int(interval_for(cfg, IN, flicker=True)),
                    "pending": (s.get("pending") or {}).get("status", ""),
                    "stay_minutes": round(stay_seconds(cfg) / 60)}
         products.append({"name": p.get("name") or s.get("title") or "", "url": p["url"], "link": share_link(p["url"]),
@@ -1921,7 +1960,7 @@ def api_settings_get():
         out[ch] = item
     s = cfg["settings"]
     return {"channels": out, "check_every_minutes": s.get("check_every_minutes", 5),
-            "fast_check_minutes": s.get("fast_check_minutes", 2), "stay_minutes": s.get("stay_minutes", 5),
+            "fast_check_minutes": s.get("fast_check_minutes", 2), "stay_minutes": s.get("stay_minutes", 0) or 0,
             "daily_summary_time": s.get("daily_summary_time", ""),
             "start_with_windows": bool(s.get("start_with_windows", True)), "windows": os.name == "nt",
             "password_set": bool(s.get("web_password_hash")), "allow_remote": bool(s.get("allow_remote", True)),

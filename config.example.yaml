@@ -6,7 +6,7 @@ settings:
   timezone: Asia/Kolkata            # all dates/times in Indian time
   check_every_minutes: 5            # in-stock products: how often to check if they went OUT of stock
   fast_check_minutes: 2             # out-of-stock products: checked more often so you know the moment they're BACK
-  stay_minutes: 5                   # product that keeps coming and going: 'available' only if it lasts this long (0 = off)
+  stay_minutes: 0                   # 0 = alert 'available' at once, even for a few seconds; e.g. 5 = only if it lasts 5 min
   delay_between_products_seconds: [2, 4]   # wait between 2 products of the SAME site (different sites run in parallel)
   use_browser: auto                 # auto | always | never  (auto = use real Chrome only if blocked)
   notify_on_first_check: true       # send a message the first time a product is checked
