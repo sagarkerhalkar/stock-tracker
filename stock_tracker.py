@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 20
+APP_VERSION = 21
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -1439,8 +1439,8 @@ def _check_all(cfg, send, products):
                 entry["blips"].append(time.time())
                 entry["detail"] = (f"{res['detail']} · it showed '{_status_word(pend['status']).lower()}' for only a moment "
                                    f"at {pend.get('since', '')[11:16]} - ignored (no alert)")
-            elif res["status"] != old and old in (IN, OUT) and res["status"] in (IN, OUT) and hold \
-                    and is_flickering(prev, changes24.get(p["url"], 0)):
+            elif res["status"] == IN and old == OUT and hold and is_flickering(prev, changes24.get(p["url"], 0)):
+                # only 'available' has to last; 'out of stock' is believed at once (the safe side)
                 if pend.get("status") != res["status"]:
                     entry["pending"] = {"status": res["status"], "ts": time.time(), "since": f"{date} {clock}"}
                     pend = entry["pending"]

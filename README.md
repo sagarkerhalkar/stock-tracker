@@ -154,8 +154,9 @@ enter your Gmail + that 16-letter password. Alerts arrive with the Excel and PDF
    instead of a wrong status, and it keeps trying.
 6. **Products that "come and go".** Some shops (often Flipkart, when a seller has only 1–2 copies) show
    *Add to cart* for a few seconds and then *Notify me* again. When a product has changed 3+ times in 24 hours,
-   its card shows **🟡 Comes and goes**, it is checked every minute after a change, and you get an alert **only if the
-   change lasts 5 minutes**. Short blips are ignored (no alert, no history entry). Change the 5 minutes – or turn it
+   its card shows **🟡 Comes and goes**. When it then shows *available*, it is checked every minute and you get the
+   "available" alert **only if it stays available for 5 minutes**. Short blips are ignored (no alert, no history entry).
+   "Out of stock" is still believed at once (checked twice), so the card never wrongly says you can buy it. Change the 5 minutes – or turn it
    off – on the **Alerts** page ("If a product keeps coming and going…"), or `stay_minutes:` in `config.yaml`.
 
 Each product card shows **Why:** – what was found and when (e.g. "Flipkart: 'Add To Cart' button (real browser) –

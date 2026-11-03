@@ -403,7 +403,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
         <select class="field" id="fastMin"><option value="1">1 minute</option><option value="2">2 minutes</option><option value="3">3 minutes</option><option value="5">5 minutes</option><option value="10">10 minutes</option></select></label>
       <label>Check available products every
         <select class="field" id="normMin"><option value="2">2 minutes</option><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option></select></label>
-      <label title="Some shops show 'in stock' for a few seconds and then take it away again. For such products you get an alert only when the change really lasts.">If a product keeps coming and going, tell me only when it stays for
+      <label title="Some shops show 'in stock' for a few seconds and then take it away again. For such products you get an alert only when the change really lasts.">If a product keeps coming and going, say “available” only when it stays for
         <select class="field" id="stayMin"><option value="0">Off – tell me every time</option><option value="2">2 minutes</option><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option></select></label>
       <button class="btn primary" id="saveSpeed">Save speed</button>
       <label class="chk" id="autoRow" style="margin-left:8px" hidden><input type="checkbox" id="autoStart"> Start automatically with Windows</label>
@@ -475,7 +475,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 20;
+const APP_VERSION = 21;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -574,7 +574,7 @@ function card(p, i, enter){
     <div class="pricebox"><div class="price num">${esc(p.price) || "—"}${p.target ? `<small>Alert below ₹${Number(p.target).toLocaleString("en-IN")}</small>` : `<small>Current price</small>`}</div>${spark(p.history, c)}</div>
     <p class="state" data-state></p>
     ${p.active && p.last_ok === false && (c === "in" || c === "out") ? `<p class="warnline">Couldn't check it just now – this is the last known status. It keeps trying${p.fails >= 2 ? ` (${p.fails} tries failed)` : ""}.</p>` : ""}
-    ${p.active && p.flicker && p.flicker.on ? `<p class="flick">🟡 <b>Comes and goes</b> – the shop showed it ${p.flicker.changes + p.flicker.blips} times in 24 hours and took it away again. ${p.flicker.pending ? `It shows <b>${p.flicker.pending === "IN STOCK" ? "available" : "out of stock"}</b> right now – checking every minute to see if it stays.` : `You get an alert only if a change lasts ${p.flicker.stay_minutes} min.`}</p>` : ""}
+    ${p.active && p.flicker && p.flicker.on ? `<p class="flick">🟡 <b>Comes and goes</b> – the shop showed it ${p.flicker.changes + p.flicker.blips} times in 24 hours and took it away again. ${p.flicker.pending ? `It shows <b>${p.flicker.pending === "IN STOCK" ? "available" : "out of stock"}</b> right now – checking every minute to see if it stays.` : `You get the “available” alert only if it stays available for ${p.flicker.stay_minutes} min.`}</p>` : ""}
     ${p.detail ? `<p class="why">Why:${esc(p.detail)}${p.last_checked ? ` · checked ${esc(since(p.last_checked))} ago` : ""}</p>` : ""}
     <div class="foot"><span class="next num" data-next></span>
       <button class="btn small wa-btn" data-act="sendone" title="Send this product on WhatsApp">📤 Send</button>
