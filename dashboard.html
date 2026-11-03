@@ -288,6 +288,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 .netline{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:0 0 14px;padding:8px 12px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
 .netline a{font-weight:700}
 
+.flick{font-size:12.5px;line-height:1.45;margin:-4px 0 10px;padding:7px 10px;border-radius:10px;background:rgba(245,180,40,.12);border:1px solid rgba(245,180,40,.35)}
 .why{font-size:12px;color:var(--faint);margin:-4px 0 10px;line-height:1.4}
 
 
@@ -402,6 +403,8 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
         <select class="field" id="fastMin"><option value="1">1 minute</option><option value="2">2 minutes</option><option value="3">3 minutes</option><option value="5">5 minutes</option><option value="10">10 minutes</option></select></label>
       <label>Check available products every
         <select class="field" id="normMin"><option value="2">2 minutes</option><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option></select></label>
+      <label title="Some shops show 'in stock' for a few seconds and then take it away again. For such products you get an alert only when the change really lasts.">If a product keeps coming and going, tell me only when it stays for
+        <select class="field" id="stayMin"><option value="0">Off – tell me every time</option><option value="2">2 minutes</option><option value="5">5 minutes</option><option value="10">10 minutes</option><option value="15">15 minutes</option></select></label>
       <button class="btn primary" id="saveSpeed">Save speed</button>
       <label class="chk" id="autoRow" style="margin-left:8px" hidden><input type="checkbox" id="autoStart"> Start automatically with Windows</label>
       <span class="result" id="speedRes"></span>
@@ -472,7 +475,7 @@ td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const CH_NAMES = {desktop:"PC pop-up", telegram:"Telegram", whatsapp:"WhatsApp", google_chat:"Google Chat", email:"Email", ntfy:"ntfy", discord:"Discord", slack:"Slack"};
-const APP_VERSION = 18;
+const APP_VERSION = 19;
 function outdated(){
   if ($("#outdated")) return;
   const b = document.createElement("div"); b.id = "outdated"; b.className = "banner out";
@@ -548,7 +551,7 @@ function count(sel, v){
 /* ---------- product cards ---------- */
 function renderGrid(){
   const shown = S.products.filter(p => filter === "all" || cls(p.status) === filter);
-  const sig = filter + JSON.stringify(shown.map(p => [p.url,p.status,p.price,p.since,p.fails,p.name,p.image,p.active,p.target,p.history.length,p.detail,p.last_ok,p.last_checked]));
+  const sig = filter + JSON.stringify(shown.map(p => [p.url,p.status,p.price,p.since,p.fails,p.name,p.image,p.active,p.target,p.history.length,p.detail,p.last_ok,p.last_checked,p.flicker]));
   const grid = $("#grid");
   if (sig === gridSig){ grid.querySelectorAll(".card").forEach(tick); return; }
   const isNew = new Set(shown.map(p => p.url)); grid.querySelectorAll(".card").forEach(c => isNew.delete(c.dataset.url));
@@ -571,7 +574,8 @@ function card(p, i, enter){
     <div class="pricebox"><div class="price num">${esc(p.price) || "—"}${p.target ? `<small>Alert below ₹${Number(p.target).toLocaleString("en-IN")}</small>` : `<small>Current price</small>`}</div>${spark(p.history, c)}</div>
     <p class="state" data-state></p>
     ${p.active && p.last_ok === false && (c === "in" || c === "out") ? `<p class="warnline">Couldn't check it just now – this is the last known status. It keeps trying${p.fails >= 2 ? ` (${p.fails} tries failed)` : ""}.</p>` : ""}
-    ${p.detail ? `<p class="why">Why: ${esc(p.detail)}${p.last_checked ? ` · checked ${esc(since(p.last_checked))} ago` : ""}</p>` : ""}
+    ${p.active && p.flicker && p.flicker.on ? `<p class="flick">🟡 <b>Comes and goes</b> – the shop showed it ${p.flicker.changes + p.flicker.blips} times in 24 hours and took it away again. ${p.flicker.pending ? `It shows <b>${p.flicker.pending === "IN STOCK" ? "available" : "out of stock"}</b> right now – checking every minute to see if it stays.` : `You get an alert only if a change lasts ${p.flicker.stay_minutes} min.`}</p>` : ""}
+    ${p.detail ? `<p class="why">Why:${esc(p.detail)}${p.last_checked ? ` · checked ${esc(since(p.last_checked))} ago` : ""}</p>` : ""}
     <div class="foot"><span class="next num" data-next></span>
       <button class="btn small wa-btn" data-act="sendone" title="Send this product on WhatsApp">📤 Send</button>
       <a class="btn small" href="${href}" target="_blank" rel="noopener">Open</a>
@@ -835,7 +839,7 @@ async function loadSettings(){
   $("#autoRow").hidden = !s.windows; $("#autoStart").checked = !!s.start_with_windows;
   remoteUI(s);
   setTimeout(() => { clearTimeout(waTimer); waPoll(); }, 50);
-  [["#fastMin", s.fast_check_minutes], ["#normMin", s.check_every_minutes]].forEach(([sel, v]) => { const el = $(sel), val = String(+v);
+  [["#fastMin", s.fast_check_minutes], ["#normMin", s.check_every_minutes], ["#stayMin", s.stay_minutes ?? 5]].forEach(([sel, v]) => { const el = $(sel), val = String(+v);
     if (![...el.options].some(o => o.value === val)) el.add(new Option(`${val} minute${+v === 1 ? "" : "s"}`, val));
     el.value = val; });
   $("#chans").innerHTML = CH.map(c => { const v = s.channels[c.k] || {};
@@ -932,7 +936,7 @@ $("#lanPw").onchange = async e => { const r = await post("/api/lanpassword", {on
   toast(e.target.checked ? "Your network now needs the password too" : "No password needed on your network"); };
 $("#autoStart").onchange = async e => { const r = await post("/api/settings", {start_with_windows: e.target.checked});
   toast(r.ok ? (e.target.checked ? "Restock Watch will start with Windows" : "It won't start with Windows any more") : r.error); };
-$("#saveSpeed").onclick = async () => { const r = await post("/api/settings", {fast_check_minutes:+$("#fastMin").value, check_every_minutes:+$("#normMin").value});
+$("#saveSpeed").onclick = async () => { const r = await post("/api/settings", {fast_check_minutes:+$("#fastMin").value, check_every_minutes:+$("#normMin").value, stay_minutes:+$("#stayMin").value});
   $("#speedRes").textContent = r.ok ? "Saved" : r.error; $("#speedRes").className = "result " + (r.ok ? "ok" : "err"); };
 
 

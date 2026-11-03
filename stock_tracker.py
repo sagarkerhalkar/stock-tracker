@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 18
+APP_VERSION = 19
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -1290,12 +1290,52 @@ EVENT_TITLES = {
 }
 
 
-def interval_for(cfg, status):
+def interval_for(cfg, status, pending=False):
     """Out-of-stock products are watched more closely so you hear the moment they come back."""
     s = cfg["settings"]
+    if pending:                     # a 'comes and goes' product just changed - look again in a minute
+        return 60.0
     if status == IN:
         return float(s.get("check_every_minutes", 5)) * 60
     return float(s.get("fast_check_minutes", 2)) * 60
+
+
+# ---- "comes and goes" guard ----------------------------------------------------------------
+# Some shop pages flicker: Flipkart can show 'Add to cart' for less than a minute and then 'Notify me'
+# again (a seller's last copy is reserved / released). For such products a change must LAST for
+# `stay_minutes` (default 5) before it is saved and you are told - so blips never send an alert.
+FLICKER_CHANGES = 3            # this many changes / blips in 24 hours = a 'comes and goes' product
+
+
+def stay_seconds(cfg):
+    try:
+        return max(0.0, float(cfg["settings"].get("stay_minutes", 5))) * 60
+    except (TypeError, ValueError):
+        return 300.0
+
+
+def recent_changes(cfg, hours=24):
+    """url -> number of real in/out changes in the last `hours` (from events.csv)."""
+    cutoff, out, zone = time.time() - hours * 3600, {}, tz(cfg)
+    for e in read_csv(EVENTS_CSV)[-3000:]:
+        if e.get("event") not in ("BACK IN STOCK", "WENT OUT OF STOCK"):
+            continue
+        try:
+            ts = datetime.strptime(f"{e['date']} {e['time']}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=zone).timestamp()
+        except (KeyError, ValueError):
+            continue
+        if ts >= cutoff:
+            out[e.get("url")] = out.get(e.get("url"), 0) + 1
+    return out
+
+
+def recent_blips(entry, hours=24):
+    cutoff = time.time() - hours * 3600
+    return [b for b in entry.get("blips", []) if b >= cutoff]
+
+
+def is_flickering(entry, changes):
+    return changes + len(recent_blips(entry)) >= FLICKER_CHANGES
 
 
 def _check_site_group(group, s):
@@ -1344,7 +1384,9 @@ def _check_all(cfg, send, products):
     confirmed = []
     for p, res in results:
         old = state.get(p["url"], {}).get("status")
-        if old in (IN, OUT) and res["status"] in (IN, OUT) and res["status"] != old and s.get("use_browser", "auto") != "never":
+        waiting = (state.get(p["url"], {}).get("pending") or {}).get("status") == res["status"]
+        if old in (IN, OUT) and res["status"] in (IN, OUT) and res["status"] != old and not waiting \
+                and s.get("use_browser", "auto") != "never":
             PROGRESS["current"] = "Double-checking " + (p.get("name") or p["url"])
             second = check_product(p, s, force_browser=True)
             if second["status"] == res["status"]:
@@ -1357,6 +1399,8 @@ def _check_all(cfg, send, products):
         confirmed.append((p, res))
     results = confirmed
     alerts = []
+    hold = stay_seconds(cfg)
+    changes24 = recent_changes(cfg) if hold else {}
     for p, res in results:
         t = now(cfg)
         date, clock = t.strftime("%Y-%m-%d"), t.strftime("%H:%M:%S")
@@ -1387,19 +1431,48 @@ def _check_all(cfg, send, products):
                                dict(base, previous=f"The site blocked {entry['fails']} checks in a row. It keeps trying.")))
         else:
             entry["fails"] = 0
+            pend = prev.get("pending") or {}
+            entry["blips"] = recent_blips(prev)
+            accepted_after = ""
+            if res["status"] == old and pend:
+                # it went straight back - only a blip: nothing is saved as a change and no alert is sent
+                entry.pop("pending", None)
+                entry["blips"].append(time.time())
+                entry["detail"] = (f"{res['detail']} · it showed '{_status_word(pend['status']).lower()}' for only a moment "
+                                   f"at {pend.get('since', '')[11:16]} - ignored (no alert)")
+            elif res["status"] != old and old in (IN, OUT) and res["status"] in (IN, OUT) and hold \
+                    and is_flickering(prev, changes24.get(p["url"], 0)):
+                if pend.get("status") != res["status"]:
+                    entry["pending"] = {"status": res["status"], "ts": time.time(), "since": f"{date} {clock}"}
+                    pend = entry["pending"]
+                waited = time.time() - pend["ts"]
+                if waited < hold:
+                    left = max(1, round((hold - waited) / 60))
+                    entry["detail"] = (f"{res['detail']} · this item keeps coming and going, so I'm waiting "
+                                       f"{left} more min to be sure it stays before telling you")
+                    res = dict(res, status=old)          # keep the old status until it has lasted
+                else:
+                    entry.pop("pending", None)
+                    accepted_after = f"It stayed {_status_word(res['status']).lower()} for {fmt_dur(waited)}."
+            elif pend:
+                entry.pop("pending", None)
             if res["status"] != old:
                 event = (f"FIRST CHECK - {res['status']}" if old is None else
                          "BACK IN STOCK" if res["status"] == IN else "WENT OUT OF STOCK")
                 entry.update({"status": res["status"], "since": f"{date} {clock}"})
                 append_csv(EVENTS_CSV, EVENT_FIELDS, {"date": date, "time": clock, "product": name, "site": res["site"],
                                                       "event": event, "old_status": old or "-", "new_status": res["status"],
-                                                      "price": res["price"], "url": p["url"], "note": res["detail"]})
+                                                      "price": res["price"], "url": p["url"],
+                                                      "note": res["detail"] + (f" - {accepted_after}" if accepted_after else "")})
                 if not (old is None and not s.get("notify_on_first_check", True)):
                     previous = ""
                     if old and prev.get("since"):
                         dur = fmt_dur(time.time() - datetime.strptime(prev["since"], "%Y-%m-%d %H:%M:%S")
                                       .replace(tzinfo=tz(cfg)).timestamp())
                         previous = (f"It was gone for {dur}." if old == OUT else f"It was there for {dur}.")
+                    if accepted_after:
+                        previous = (previous + " " + accepted_after +
+                                    (" It often comes and goes - buy fast." if res["status"] == IN else "")).strip()
                     alerts.append((EVENT_TITLES[event], dict(base, previous=previous)))
             target = p.get("target_price")
             pnum = to_num(res["price"])
@@ -1503,7 +1576,7 @@ def due_products(cfg, force=False):
         if not p.get("active", True):
             continue
         st_ = state.get(p["url"], {})
-        at = st_.get("last_ts", 0) + interval_for(cfg, st_.get("status"))
+        at = st_.get("last_ts", 0) + interval_for(cfg, st_.get("status"), bool(st_.get("pending")))
         if force or at <= t:
             due.append(p)
         else:
@@ -1794,19 +1867,24 @@ def price_history():
 
 def api_state():
     cfg, state, hist = load_config(), load_state(), price_history()
+    changes24 = recent_changes(cfg)
     products = []
     for p in cfg["products"]:
         s = state.get(p["url"], {})
         due_in = None
         if s.get("last_ts"):
-            due_in = max(0, int(s["last_ts"] + interval_for(cfg, s.get("status")) - time.time()))
+            due_in = max(0, int(s["last_ts"] + interval_for(cfg, s.get("status"), bool(s.get("pending"))) - time.time()))
+        flicker = {"changes": changes24.get(p["url"], 0), "blips": len(recent_blips(s)),
+                   "on": bool(stay_seconds(cfg)) and is_flickering(s, changes24.get(p["url"], 0)),
+                   "pending": (s.get("pending") or {}).get("status", ""),
+                   "stay_minutes": round(stay_seconds(cfg) / 60)}
         products.append({"name": p.get("name") or s.get("title") or "", "url": p["url"], "link": share_link(p["url"]),
                          "site": site_name(p["url"]),
                          "status": s.get("status", "NOT CHECKED"), "since": s.get("since", ""),
                          "price": s.get("price", ""), "last_checked": s.get("last_checked", ""),
                          "target": p.get("target_price"), "detail": s.get("detail", ""), "image": s.get("image", ""),
                          "fails": s.get("fails", 0), "active": p.get("active", True), "history": hist.get(p["url"], []),
-                         "last_ok": s.get("last_ok", True),
+                         "last_ok": s.get("last_ok", True), "flicker": flicker,
                          "due_in": due_in})
     n = cfg["notifications"]
     channels = [k for k in CHANNELS if (n.get(k) or ({"enabled": True} if k == "desktop" else {})).get("enabled")]
@@ -1844,7 +1922,8 @@ def api_settings_get():
         out[ch] = item
     s = cfg["settings"]
     return {"channels": out, "check_every_minutes": s.get("check_every_minutes", 5),
-            "fast_check_minutes": s.get("fast_check_minutes", 2), "daily_summary_time": s.get("daily_summary_time", ""),
+            "fast_check_minutes": s.get("fast_check_minutes", 2), "stay_minutes": s.get("stay_minutes", 5),
+            "daily_summary_time": s.get("daily_summary_time", ""),
             "start_with_windows": bool(s.get("start_with_windows", True)), "windows": os.name == "nt",
             "password_set": bool(s.get("web_password_hash")), "allow_remote": bool(s.get("allow_remote", True)),
             "lan_password": bool(s.get("lan_password", False)),
@@ -1883,6 +1962,8 @@ def api_settings_save(body):
     for k in ("check_every_minutes", "fast_check_minutes"):
         if k in body:
             cfg["settings"][k] = max(1.0, float(body[k]))
+    if "stay_minutes" in body:
+        cfg["settings"]["stay_minutes"] = min(60.0, max(0.0, float(body["stay_minutes"] or 0)))
     if "start_with_windows" in body:
         cfg["settings"]["start_with_windows"] = bool(body["start_with_windows"])
         set_autostart(cfg["settings"]["start_with_windows"])

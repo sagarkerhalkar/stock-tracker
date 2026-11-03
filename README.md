@@ -152,6 +152,11 @@ enter your Gmail + that 16-letter password. Alerts arrive with the Excel and PDF
 4. Every change (in → out, out → in) is **checked twice** before you get an alert, so one odd page can't cause a wrong alert.
 5. If a page can't be read (robot check), the product shows **"Couldn't check it just now – last known status"**
    instead of a wrong status, and it keeps trying.
+6. **Products that "come and go".** Some shops (often Flipkart, when a seller has only 1–2 copies) show
+   *Add to cart* for a few seconds and then *Notify me* again. When a product has changed 3+ times in 24 hours,
+   its card shows **🟡 Comes and goes**, it is checked every minute after a change, and you get an alert **only if the
+   change lasts 5 minutes**. Short blips are ignored (no alert, no history entry). Change the 5 minutes – or turn it
+   off – on the **Alerts** page ("If a product keeps coming and going…"), or `stay_minutes:` in `config.yaml`.
 
 Each product card shows **Why:** – what was found and when (e.g. "Flipkart: 'Add To Cart' button (real browser) –
 confirmed twice · checked 1 min ago"). Use ••• → **Check this product now** any time.
