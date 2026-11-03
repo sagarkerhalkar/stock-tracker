@@ -42,7 +42,7 @@ XLSX_FILE = os.path.join(DATA, "stock_report.xlsx")
 PDF_FILE = os.path.join(DATA, "stock_report.pdf")
 
 IN, OUT, UNKNOWN = "IN STOCK", "OUT OF STOCK", "UNKNOWN"
-APP_VERSION = 19
+APP_VERSION = 20
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
@@ -1384,8 +1384,7 @@ def _check_all(cfg, send, products):
     confirmed = []
     for p, res in results:
         old = state.get(p["url"], {}).get("status")
-        waiting = (state.get(p["url"], {}).get("pending") or {}).get("status") == res["status"]
-        if old in (IN, OUT) and res["status"] in (IN, OUT) and res["status"] != old and not waiting \
+        if old in (IN, OUT) and res["status"] in (IN, OUT) and res["status"] != old \
                 and s.get("use_browser", "auto") != "never":
             PROGRESS["current"] = "Double-checking " + (p.get("name") or p["url"])
             second = check_product(p, s, force_browser=True)
